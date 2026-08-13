@@ -336,12 +336,12 @@ local Library = {
         -- rather than neon. Text is a soft lavender-white, not COLOR_WHITE, which goes clinical
         -- against these surfaces; COLOR_WHITE stays reserved for gradient carriers. Bad is left
         -- warm on purpose: rose opposite violet is what makes an error read as one.
-        Background = Color3.fromRGB(24, 23, 36), Sidebar = Color3.fromRGB(17, 16, 27), Section = Color3.fromRGB(39, 37, 55),
-        Text = Color3.fromRGB(233, 230, 242), SubText = Color3.fromRGB(174, 170, 198), TabText = Color3.fromRGB(203, 199, 223), Placeholder = Color3.fromRGB(112, 108, 136),
-        Accent = Color3.fromRGB(139, 132, 196), Active = Color3.fromRGB(166, 158, 219), Close = Color3.fromRGB(166, 162, 190),
-        Stroke = Color3.fromRGB(58, 55, 80), WindowStroke = Color3.fromRGB(80, 75, 110), ToggleActive = Color3.fromRGB(40, 35, 58),
-        Chip = Color3.fromRGB(45, 42, 64), ToggleBorder = Color3.fromRGB(98, 90, 142), InputFocus = Color3.fromRGB(42, 39, 60), DropdownOption = Color3.fromRGB(40, 38, 57), BindBackground = Color3.fromRGB(14, 13, 22), SliderTrack = Color3.fromRGB(21, 20, 32),
-        Bad = Color3.fromRGB(196, 106, 112),
+        Background = Color3.fromRGB(19, 18, 29), Sidebar = Color3.fromRGB(12, 12, 20), Section = Color3.fromRGB(32, 30, 46),
+        Text = Color3.fromRGB(228, 225, 238), SubText = Color3.fromRGB(166, 162, 191), TabText = Color3.fromRGB(196, 192, 216), Placeholder = Color3.fromRGB(103, 99, 126),
+        Accent = Color3.fromRGB(132, 124, 189), Active = Color3.fromRGB(159, 150, 213), Close = Color3.fromRGB(158, 154, 183),
+        Stroke = Color3.fromRGB(48, 45, 67), WindowStroke = Color3.fromRGB(67, 62, 94), ToggleActive = Color3.fromRGB(33, 29, 49),
+        Chip = Color3.fromRGB(37, 34, 54), ToggleBorder = Color3.fromRGB(88, 80, 130), InputFocus = Color3.fromRGB(35, 32, 50), DropdownOption = Color3.fromRGB(33, 31, 48), BindBackground = Color3.fromRGB(10, 10, 17), SliderTrack = Color3.fromRGB(16, 15, 25),
+        Bad = Color3.fromRGB(191, 101, 108),
     },
     TabOrder = {}, BlurEffect = nil, CurrentBlurVal = 0,
 }
@@ -638,27 +638,27 @@ end
 -- Stops are written directly onto a white carrier, not multiplied against a tinted one: a
 -- UIGradient multiplies, which can only darken, and on near-black surfaces that flattens the ramp.
 -- Writing them lets the top sit ABOVE the base colour, which is what reads as depth.
--- The bottom sinks toward GLASS_FALL, a deep indigo, NOT toward black: lerping to black drags
--- saturation out as it darkens, so the lower half of a tall surface greys off and the falloff
--- reads as a smudge instead of depth. A tinted floor keeps the hue all the way down.
-local GLASS_LIFT, GLASS_FALL = Color3.fromRGB(86, 78, 132), Color3.fromRGB(10, 9, 18)
+-- The floor is a deep indigo, not black: lerping to black drags saturation out as it darkens,
+-- so a tall surface greys off at the bottom and the falloff reads as a smudge instead of depth.
+local GLASS_LIFT, GLASS_FALL = Color3.fromRGB(78, 70, 122), Color3.fromRGB(7, 7, 13)
+local GLASS_STOPS = 9
 
 -- lift = how far the top rises above the base, fall = how far the bottom sinks.
 local function Glass(obj, lift, fall)
     lift, fall = lift or 0.30, fall or 0.34
     local base = obj.BackgroundColor3
+    -- EVERY stop sits on the single straight segment top -> bottom. Interpolating toward one
+    -- colour for the upper stops and a different one for the lower stops bends the path through
+    -- RGB, and the bend renders as a crease across the middle of a full-height page. Only the
+    -- RATE varies: t^0.62 puts most of the change in the top third, the way light actually falls.
+    local top, bottom = base:Lerp(GLASS_LIFT, lift), base:Lerp(GLASS_FALL, fall)
     obj.BackgroundColor3 = COLOR_WHITE
-    -- Seven stops on a roughly exponential decay rather than four on a linear one. The old
-    -- spacing put its knees at 0.22 and 0.55, which on a full-height page is a visible band.
-    Create("UIGradient", obj, { Rotation = 90, Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0.00, base:Lerp(GLASS_LIFT, lift)),
-        ColorSequenceKeypoint.new(0.10, base:Lerp(GLASS_LIFT, lift * 0.70)),
-        ColorSequenceKeypoint.new(0.24, base:Lerp(GLASS_LIFT, lift * 0.42)),
-        ColorSequenceKeypoint.new(0.42, base:Lerp(GLASS_LIFT, lift * 0.20)),
-        ColorSequenceKeypoint.new(0.62, base:Lerp(GLASS_LIFT, lift * 0.06)),
-        ColorSequenceKeypoint.new(0.82, base:Lerp(GLASS_FALL, fall * 0.38)),
-        ColorSequenceKeypoint.new(1.00, base:Lerp(GLASS_FALL, fall)),
-    }) })
+    local stops = table.create(GLASS_STOPS)
+    for i = 1, GLASS_STOPS do
+        local t = (i - 1) / (GLASS_STOPS - 1)
+        stops[i] = ColorSequenceKeypoint.new(t, top:Lerp(bottom, t ^ 0.62))
+    end
+    Create("UIGradient", obj, { Rotation = 90, Color = ColorSequence.new(stops) })
     return obj
 end
 
