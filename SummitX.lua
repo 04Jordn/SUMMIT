@@ -332,16 +332,16 @@ end)
 
 local Library = {
     Theme = {
-        -- Deep verdigris ground with a sea-glass accent -- desaturated so it stays vintage rather
-        -- than neon. Text is a soft off-white with a green cast, not COLOR_WHITE, which reads
-        -- clinical against these surfaces; COLOR_WHITE stays reserved for gradient carriers.
-        -- Bad is left warm on purpose: brick opposite teal is what makes an error read as one.
-        Background = Color3.fromRGB(21, 30, 31), Sidebar = Color3.fromRGB(15, 22, 23), Section = Color3.fromRGB(35, 48, 49),
-        Text = Color3.fromRGB(230, 238, 235), SubText = Color3.fromRGB(163, 187, 183), TabText = Color3.fromRGB(197, 216, 212), Placeholder = Color3.fromRGB(102, 124, 123),
-        Accent = Color3.fromRGB(116, 170, 163), Active = Color3.fromRGB(146, 199, 190), Close = Color3.fromRGB(154, 179, 175),
-        Stroke = Color3.fromRGB(53, 71, 71), WindowStroke = Color3.fromRGB(74, 99, 98), ToggleActive = Color3.fromRGB(32, 51, 51),
-        Chip = Color3.fromRGB(39, 55, 55), ToggleBorder = Color3.fromRGB(86, 124, 120), InputFocus = Color3.fromRGB(37, 53, 53), DropdownOption = Color3.fromRGB(36, 50, 51), BindBackground = Color3.fromRGB(12, 18, 19), SliderTrack = Color3.fromRGB(19, 27, 28),
-        Bad = Color3.fromRGB(190, 111, 99),
+        -- Deep indigo ground with a dusty periwinkle accent -- desaturated so it reads mulled
+        -- rather than neon. Text is a soft lavender-white, not COLOR_WHITE, which goes clinical
+        -- against these surfaces; COLOR_WHITE stays reserved for gradient carriers. Bad is left
+        -- warm on purpose: rose opposite violet is what makes an error read as one.
+        Background = Color3.fromRGB(24, 23, 36), Sidebar = Color3.fromRGB(17, 16, 27), Section = Color3.fromRGB(39, 37, 55),
+        Text = Color3.fromRGB(233, 230, 242), SubText = Color3.fromRGB(174, 170, 198), TabText = Color3.fromRGB(203, 199, 223), Placeholder = Color3.fromRGB(112, 108, 136),
+        Accent = Color3.fromRGB(139, 132, 196), Active = Color3.fromRGB(166, 158, 219), Close = Color3.fromRGB(166, 162, 190),
+        Stroke = Color3.fromRGB(58, 55, 80), WindowStroke = Color3.fromRGB(80, 75, 110), ToggleActive = Color3.fromRGB(40, 35, 58),
+        Chip = Color3.fromRGB(45, 42, 64), ToggleBorder = Color3.fromRGB(98, 90, 142), InputFocus = Color3.fromRGB(42, 39, 60), DropdownOption = Color3.fromRGB(40, 38, 57), BindBackground = Color3.fromRGB(14, 13, 22), SliderTrack = Color3.fromRGB(21, 20, 32),
+        Bad = Color3.fromRGB(196, 106, 112),
     },
     TabOrder = {}, BlurEffect = nil, CurrentBlurVal = 0,
 }
@@ -638,19 +638,26 @@ end
 -- Stops are written directly onto a white carrier, not multiplied against a tinted one: a
 -- UIGradient multiplies, which can only darken, and on near-black surfaces that flattens the ramp.
 -- Writing them lets the top sit ABOVE the base colour, which is what reads as depth.
-local GLASS_LIFT = Color3.fromRGB(72, 114, 110)
+-- The bottom sinks toward GLASS_FALL, a deep indigo, NOT toward black: lerping to black drags
+-- saturation out as it darkens, so the lower half of a tall surface greys off and the falloff
+-- reads as a smudge instead of depth. A tinted floor keeps the hue all the way down.
+local GLASS_LIFT, GLASS_FALL = Color3.fromRGB(86, 78, 132), Color3.fromRGB(10, 9, 18)
 
--- lift = how far the top rises above the base, fall = how far the bottom sinks toward black.
+-- lift = how far the top rises above the base, fall = how far the bottom sinks.
 local function Glass(obj, lift, fall)
-    lift, fall = lift or 0.34, fall or 0.42
+    lift, fall = lift or 0.30, fall or 0.34
     local base = obj.BackgroundColor3
     obj.BackgroundColor3 = COLOR_WHITE
+    -- Seven stops on a roughly exponential decay rather than four on a linear one. The old
+    -- spacing put its knees at 0.22 and 0.55, which on a full-height page is a visible band.
     Create("UIGradient", obj, { Rotation = 90, Color = ColorSequence.new({
         ColorSequenceKeypoint.new(0.00, base:Lerp(GLASS_LIFT, lift)),
-        ColorSequenceKeypoint.new(0.22, base:Lerp(GLASS_LIFT, lift * 0.5)),
-        ColorSequenceKeypoint.new(0.55, base:Lerp(GLASS_LIFT, lift * 0.15)),
-        ColorSequenceKeypoint.new(0.80, base:Lerp(COLOR_BLACK, fall * 0.25)),
-        ColorSequenceKeypoint.new(1.00, base:Lerp(COLOR_BLACK, fall)),
+        ColorSequenceKeypoint.new(0.10, base:Lerp(GLASS_LIFT, lift * 0.70)),
+        ColorSequenceKeypoint.new(0.24, base:Lerp(GLASS_LIFT, lift * 0.42)),
+        ColorSequenceKeypoint.new(0.42, base:Lerp(GLASS_LIFT, lift * 0.20)),
+        ColorSequenceKeypoint.new(0.62, base:Lerp(GLASS_LIFT, lift * 0.06)),
+        ColorSequenceKeypoint.new(0.82, base:Lerp(GLASS_FALL, fall * 0.38)),
+        ColorSequenceKeypoint.new(1.00, base:Lerp(GLASS_FALL, fall)),
     }) })
     return obj
 end
@@ -2559,7 +2566,7 @@ function Library:CreateWindow(titleText)
         btn.MouseButton1Click:Connect(callback)
         return btn, ic
     end
-    WindowBtn("x", -10, Color3.fromRGB(186, 104, 96), function() if genv.SummitCleanup then genv.SummitCleanup() end end)
+    WindowBtn("x", -10, Color3.fromRGB(192, 102, 110), function() if genv.SummitCleanup then genv.SummitCleanup() end end)
     local _
     _, maxIcon = WindowBtn("maximize-2", -44, Theme.Close, function() SetMaximized(not maximized) end)
     WindowBtn("minus", -78, Theme.Close, function() SetMenuOpen(false) end)
