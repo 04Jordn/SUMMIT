@@ -641,24 +641,22 @@ end
 -- The floor is a deep indigo, not black: lerping to black drags saturation out as it darkens,
 -- so a tall surface greys off at the bottom and the falloff reads as a smudge instead of depth.
 local GLASS_LIFT, GLASS_FALL = Color3.fromRGB(64, 57, 101), Color3.fromRGB(5, 5, 10)
-local GLASS_STOPS = 9
 
 -- lift = how far the top rises above the base, fall = how far the bottom sinks.
 local function Glass(obj, lift, fall)
-    lift, fall = lift or 0.18, fall or 0.32
+    -- LINEAR, and it has to be. UIGradient interpolates in 8-bit, so a band is however many
+    -- pixels the ramp spends inside one integer step, and a band edge is only visible when it is
+    -- WIDE -- tightly packed edges blur into a smooth ramp. An eased curve spends its travel at
+    -- the top and crawls across the bottom, which is what put 38px stripes down the lower half.
+    -- Straight-line travel with the deepest floor the palette allows packs the same drop into
+    -- 22px bands. Roblox cannot dither a gradient, so edge spacing is the only lever there is.
+    lift, fall = lift or 0.13, fall or 1.00
     local base = obj.BackgroundColor3
-    -- EVERY stop sits on the single straight segment top -> bottom. Interpolating toward one
-    -- colour for the upper stops and a different one for the lower stops bends the path through
-    -- RGB, and the bend renders as a crease across the middle of a full-height page. Only the
-    -- RATE varies: t^0.62 puts most of the change in the top third, the way light actually falls.
-    local top, bottom = base:Lerp(GLASS_LIFT, lift), base:Lerp(GLASS_FALL, fall)
     obj.BackgroundColor3 = COLOR_WHITE
-    local stops = table.create(GLASS_STOPS)
-    for i = 1, GLASS_STOPS do
-        local t = (i - 1) / (GLASS_STOPS - 1)
-        stops[i] = ColorSequenceKeypoint.new(t, top:Lerp(bottom, t ^ 0.62))
-    end
-    Create("UIGradient", obj, { Rotation = 90, Color = ColorSequence.new(stops) })
+    -- Two stops: linear interpolation between them is exactly what the sampled curve produced,
+    -- so the extra keypoints only cost build time.
+    Create("UIGradient", obj, { Rotation = 90, Color = ColorSequence.new(
+        base:Lerp(GLASS_LIFT, lift), base:Lerp(GLASS_FALL, fall)) })
     return obj
 end
 
@@ -2310,7 +2308,7 @@ function Library:CreateWindow(titleText)
     local shadow = Shadow(root, 120, 0.62, 0)
     local main = Create("Frame", root, { Size = UDim2.fromScale(1, 1),
         BackgroundColor3 = Theme.Background, BackgroundTransparency = 0, Active = true, ZIndex = 1 })
-    Glass(main, 0.13, 0.62)
+    Glass(main, 0.13, 1.00)
     local _, mainStroke = Decorate(main, L.Corner12, {Theme.WindowStroke, 0.3, 1.6})
     EdgeGradient(mainStroke)
 
