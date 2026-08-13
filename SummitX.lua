@@ -2648,10 +2648,15 @@ function Library:CreateWindow(titleText)
             for _, f in ipairs(tabSetters) do f(false) end
             SetActive(true)
             headTitle.Text, headSub.Text = name, subtitle or ""
+            -- Critically damped, and both properties in ONE call so they share a spring: an
+            -- underdamped rail overshoots ~0.5px and reverses twice on arrival, which lands as a
+            -- twitch, and separate durations left the height still moving after the travel
+            -- finished, shimmering both ends. Whole-pixel stretch, since AnchorPoint.Y is 0.5 and
+            -- a fractional height puts each edge on a half pixel.
             local dist = math.abs(selY - selector.Position.Y.Offset)
-            selector.Size = UDim2.new(0, 3, 0, math.clamp(16 + dist * 0.35, 16, 42))
-            Tween(selector, { Position = UDim2.new(0, 5, 0, selY) }, 0.26, 0.82)
-            Tween(selector, { Size = UDim2.new(0, 3, 0, 16) }, 0.34)
+            CancelMotors(selector)
+            selector.Size = UDim2.new(0, 3, 0, math.round(math.clamp(16 + dist * 0.35, 16, 42)))
+            Tween(selector, { Position = UDim2.new(0, 5, 0, selY), Size = UDim2.new(0, 3, 0, 16) }, 0.28)
             if ENABLE_TAB_TRANSITION then
                 pageHost.Position = UDim2.new(0, 0, 0, L.PageTop + 12)
                 Tween(pageHost, { Position = UDim2.new(0, 0, 0, L.PageTop) }, 0.28, 0.85)
