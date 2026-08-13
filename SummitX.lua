@@ -332,12 +332,16 @@ end)
 
 local Library = {
     Theme = {
-        Background =Color3.fromRGB(7, 12, 22), Sidebar = Color3.fromRGB(4, 8, 15), Section = Color3.fromRGB(15, 26, 43),
-        Text = COLOR_WHITE, SubText = Color3.fromRGB(158, 183, 214), TabText = Color3.fromRGB(208, 224, 245), Placeholder = Color3.fromRGB(78, 96, 124),
-        Accent = Color3.fromRGB(33, 132, 158), Active = Color3.fromRGB(46, 158, 186), Close = Color3.fromRGB(112, 152, 208),
-        Stroke = Color3.fromRGB(30, 50, 79), WindowStroke = Color3.fromRGB(34, 71, 110), ToggleActive = Color3.fromRGB(14, 28, 47),
-        Chip = Color3.fromRGB(16, 34, 54), ToggleBorder = Color3.fromRGB(26, 64, 84), InputFocus = Color3.fromRGB(18, 31, 52), DropdownOption = Color3.fromRGB(18, 30, 50), BindBackground = Color3.fromRGB(3, 7, 14), SliderTrack = Color3.fromRGB(7, 11, 21),
-        Bad = Color3.fromRGB(214, 82, 82),
+        -- Deep verdigris ground with a sea-glass accent -- desaturated so it stays vintage rather
+        -- than neon. Text is a soft off-white with a green cast, not COLOR_WHITE, which reads
+        -- clinical against these surfaces; COLOR_WHITE stays reserved for gradient carriers.
+        -- Bad is left warm on purpose: brick opposite teal is what makes an error read as one.
+        Background = Color3.fromRGB(21, 30, 31), Sidebar = Color3.fromRGB(15, 22, 23), Section = Color3.fromRGB(35, 48, 49),
+        Text = Color3.fromRGB(230, 238, 235), SubText = Color3.fromRGB(163, 187, 183), TabText = Color3.fromRGB(197, 216, 212), Placeholder = Color3.fromRGB(102, 124, 123),
+        Accent = Color3.fromRGB(116, 170, 163), Active = Color3.fromRGB(146, 199, 190), Close = Color3.fromRGB(154, 179, 175),
+        Stroke = Color3.fromRGB(53, 71, 71), WindowStroke = Color3.fromRGB(74, 99, 98), ToggleActive = Color3.fromRGB(32, 51, 51),
+        Chip = Color3.fromRGB(39, 55, 55), ToggleBorder = Color3.fromRGB(86, 124, 120), InputFocus = Color3.fromRGB(37, 53, 53), DropdownOption = Color3.fromRGB(36, 50, 51), BindBackground = Color3.fromRGB(12, 18, 19), SliderTrack = Color3.fromRGB(19, 27, 28),
+        Bad = Color3.fromRGB(190, 111, 99),
     },
     TabOrder = {}, BlurEffect = nil, CurrentBlurVal = 0,
 }
@@ -634,7 +638,7 @@ end
 -- Stops are written directly onto a white carrier, not multiplied against a tinted one: a
 -- UIGradient multiplies, which can only darken, and on near-black surfaces that flattens the ramp.
 -- Writing them lets the top sit ABOVE the base colour, which is what reads as depth.
-local GLASS_LIFT = Color3.fromRGB(48, 88, 138)
+local GLASS_LIFT = Color3.fromRGB(72, 114, 110)
 
 -- lift = how far the top rises above the base, fall = how far the bottom sinks toward black.
 local function Glass(obj, lift, fall)
@@ -2555,7 +2559,7 @@ function Library:CreateWindow(titleText)
         btn.MouseButton1Click:Connect(callback)
         return btn, ic
     end
-    WindowBtn("x", -10, Color3.fromRGB(205, 60, 60), function() if genv.SummitCleanup then genv.SummitCleanup() end end)
+    WindowBtn("x", -10, Color3.fromRGB(186, 104, 96), function() if genv.SummitCleanup then genv.SummitCleanup() end end)
     local _
     _, maxIcon = WindowBtn("maximize-2", -44, Theme.Close, function() SetMaximized(not maximized) end)
     WindowBtn("minus", -78, Theme.Close, function() SetMenuOpen(false) end)
