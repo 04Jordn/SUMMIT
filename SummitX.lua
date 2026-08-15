@@ -78,8 +78,8 @@ local L = {
 }
 
 local COLOR_WHITE, COLOR_BLACK = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
--- FAB_CORNER is shared by the button and its fill so they read as one shape.
-local FAB_CORNER, FAB_FACE_ALPHA, FAB_PLATE_ALPHA = UDim.new(0, 14), 0.42, 0.62
+-- 18 on a 46px face is the 0.4 radius ratio the badge artwork is drawn to.
+local FAB_CORNER, FAB_FACE_ALPHA = UDim.new(0, 18), 0.42
 -- Bump FAB_SCHEMA to force every client to re-fetch the badge after replacing the artwork; the
 -- version is in the filename, so a stale cache can never be picked up by name.
 local FAB_ICON, FAB_SCHEMA = "https://raw.githubusercontent.com/04Jordn/SUMMIT/main/SX%20Icon.png", 1
@@ -2616,8 +2616,7 @@ function Library:CreateWindow(titleText)
             BackgroundTransparency = 1, Active = true, ZIndex = 100, Visible = false })
         fabScale = Create("UIScale", fab, { Scale = 0 })
         Shadow(fab, 26, 0.72, 99)
-        -- Translucent, so the game reads through the badge. The plate stays because the glass
-        -- alone is too light for the mark to sit on over a bright scene.
+        -- Translucent, so the game reads through the badge.
         local face = Create("TextButton", fab, { Size = UDim2.fromScale(1, 1),
             AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
             BackgroundColor3 = Theme.Active, BackgroundTransparency = FAB_FACE_ALPHA, ZIndex = 100 })
@@ -2626,12 +2625,6 @@ function Library:CreateWindow(titleText)
         -- when the window hides -- the exact moment the launcher animates in.
         local hoverScale = Create("UIScale", face, { Scale = 1 })
         Decorate(face, FAB_CORNER, {Theme.ToggleBorder, 0.35, 2})
-        -- Shares the button's exact rect and corner radius, so the black cannot cross the rim.
-        -- A radial cannot do edge-to-edge here: covering the face needs ~2.5x oversize and the tail
-        -- then hangs outside with nothing to clip it (ClipsDescendants clips to a RECTANGLE).
-        local plate = Create("Frame", face, { BackgroundColor3 = COLOR_BLACK, BackgroundTransparency = FAB_PLATE_ALPHA,
-            Size = UDim2.fromScale(1, 1), Active = false, Selectable = false, ZIndex = 101 })
-        Decorate(plate, FAB_CORNER)
         local mark = Create("ImageLabel", face, { Size = UDim2.fromScale(0.62, 0.62),
             AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
             ScaleType = Enum.ScaleType.Fit, ZIndex = 102 })
@@ -2675,8 +2668,8 @@ function Library:CreateWindow(titleText)
             if id then
                 mark.Image = id
             else
-                Create("TextLabel", face, { Text = '<font color="#FFFFFF">S</font><font color="#000000">X</font>',
-                    RichText = true, Size = UDim2.fromScale(1, 1), Font = Enum.Font.GothamBlack, TextSize = 18, ZIndex = 102 })
+                Create("TextLabel", face, { Text = "SX", Size = UDim2.fromScale(1, 1),
+                    Font = Enum.Font.GothamBlack, TextSize = 18, TextColor3 = COLOR_WHITE, ZIndex = 102 })
             end
         end)
 
