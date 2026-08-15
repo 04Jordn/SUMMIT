@@ -78,8 +78,8 @@ local L = {
 }
 
 local COLOR_WHITE, COLOR_BLACK = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
--- Launcher face: 49% black. FAB_CORNER is shared by the button and the fill so they are one shape.
-local FAB_CORNER, FAB_PLATE_ALPHA = UDim.new(0, 14), 0.51
+-- FAB_CORNER is shared by the button and its fill so they read as one shape.
+local FAB_CORNER, FAB_FACE_ALPHA, FAB_PLATE_ALPHA = UDim.new(0, 14), 0.42, 0.62
 -- Bump FAB_SCHEMA to force every client to re-fetch the badge after replacing the artwork; the
 -- version is in the filename, so a stale cache can never be picked up by name.
 local FAB_ICON, FAB_SCHEMA = "https://raw.githubusercontent.com/04Jordn/SUMMIT/main/SX%20Icon.png", 1
@@ -2315,13 +2315,26 @@ function Library:CreateWindow(titleText)
     EdgeGradient(mainStroke)
 
     -- opt-in from Settings and OFF by default, so nothing appears on screen unless it is asked for
-    local fab, fabEnabled = nil, false
+    local fab, fabScale, fabEnabled = nil, nil, false
     local ToggleHooks = {}
     -- tracked explicitly: root.Visible now lags the toggle by the fade duration
     local menuOpen = true
     -- must stay below menuOpen: declared above it, the body binds a nil GLOBAL instead of the
     -- upvalue, `not menuOpen` is always true, and the badge shows through an open menu
-    local function RefreshFab() if fab then fab.Visible = fabEnabled and not menuOpen end end
+    local function RefreshFab()
+        if not fab then return end
+        local show = fabEnabled and not menuOpen
+        if show then
+            fab.Visible = true
+            Tween(fabScale, { Scale = 1 }, 0.32, 0.62)
+        else
+            -- Visible flips only once the collapse lands, and re-checks: a show that arrives
+            -- mid-collapse would otherwise be hidden again by the completion of the old one.
+            Tween(fabScale, { Scale = 0 }, 0.18, 1, function()
+                if not (fabEnabled and not menuOpen) then fab.Visible = false end
+            end)
+        end
+    end
     local function SetMenuOpen(open)
         open = not not open
         if open == menuOpen then return end
@@ -2601,10 +2614,18 @@ function Library:CreateWindow(titleText)
         fab = Create("Frame", gui, { Size = UDim2.new(0, 46, 0, 46),
             AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 16),
             BackgroundTransparency = 1, Active = true, ZIndex = 100, Visible = false })
-        Shadow(fab, 26, 0.6, 99)
+        fabScale = Create("UIScale", fab, { Scale = 0 })
+        Shadow(fab, 26, 0.72, 99)
+        -- Translucent, so the game reads through the badge. The plate stays because the glass
+        -- alone is too light for the mark to sit on over a bright scene.
         local face = Create("TextButton", fab, { Size = UDim2.fromScale(1, 1),
-            BackgroundColor3 = Theme.Active, BackgroundTransparency = 0, ZIndex = 100 })
-        Decorate(face, FAB_CORNER, {Theme.ToggleBorder, 0.05, 2})
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+            BackgroundColor3 = Theme.Active, BackgroundTransparency = FAB_FACE_ALPHA, ZIndex = 100 })
+        -- Hover scales the FACE, show/hide scales the carrier. One UIScale driving both would be
+        -- clobbered by ResetInteractives, which force-writes every hover target to its rest value
+        -- when the window hides -- the exact moment the launcher animates in.
+        local hoverScale = Create("UIScale", face, { Scale = 1 })
+        Decorate(face, FAB_CORNER, {Theme.ToggleBorder, 0.35, 2})
         -- Shares the button's exact rect and corner radius, so the black cannot cross the rim.
         -- A radial cannot do edge-to-edge here: covering the face needs ~2.5x oversize and the tail
         -- then hangs outside with nothing to clip it (ClipsDescendants clips to a RECTANGLE).
@@ -2614,7 +2635,12 @@ function Library:CreateWindow(titleText)
         local mark = Create("ImageLabel", face, { Size = UDim2.fromScale(0.62, 0.62),
             AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
             ScaleType = Enum.ScaleType.Fit, ZIndex = 102 })
-        Interactive(face, { Over = { BackgroundColor3 = Theme.Accent }, Out = { BackgroundColor3 = Theme.Active }, Time = 0.14 })
+        Interactive(face, { Over = { BackgroundTransparency = FAB_FACE_ALPHA - 0.22, BackgroundColor3 = Theme.Accent },
+            Out = { BackgroundTransparency = FAB_FACE_ALPHA, BackgroundColor3 = Theme.Active }, Time = 0.14 })
+        -- Scale is barred on in-layout widgets because it shoves their neighbours around. The
+        -- launcher is absolutely positioned in the ScreenGui with no siblings, so there is no
+        -- layout to thrash and the grow is free.
+        Interactive(face, { Target = hoverScale, Over = { Scale = 1.09 }, Out = { Scale = 1 }, Time = 0.16 })
 
         -- An ImageLabel cannot load an http url, so the badge is fetched to disk and handed back
         -- as a custom asset. Off-thread: the launcher is usable the whole time, it just wears the
