@@ -78,9 +78,11 @@ local L = {
 }
 
 local COLOR_WHITE, COLOR_BLACK = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
--- launcher plate: stacked copies of the shadow sprite make a radial black falloff (see the fab)
 -- Launcher face: 49% black. FAB_CORNER is shared by the button and the fill so they are one shape.
 local FAB_CORNER, FAB_PLATE_ALPHA = UDim.new(0, 14), 0.51
+-- Bump FAB_SCHEMA to force every client to re-fetch the badge after replacing the artwork; the
+-- version is in the filename, so a stale cache can never be picked up by name.
+local FAB_ICON, FAB_SCHEMA = "https://raw.githubusercontent.com/04Jordn/SUMMIT/main/SX%20Icon.png", 1
 local MAX_BLUR, DEFAULT_TWEEN_TIME = 24, 0.35
 -- The checkmark crossfade, the one animation not on Tween(): a spring is asymmetric, which reads
 -- wrong for a symmetric fade in and out.
@@ -2593,25 +2595,67 @@ function Library:CreateWindow(titleText)
     -- Built on every platform, not just touch: it is the only way back in if the toggle key is
     -- forgotten, and it costs nothing while hidden. Shows whenever the menu is closed.
     do
-        -- No Shadow() parented here: under ZIndexBehavior.Sibling a descendant always draws above
-        -- its ancestor regardless of ZIndex, so it renders as a blur across the face, not behind it.
-        fab = Create("TextButton", gui, { Size = UDim2.new(0, 46, 0, 46),
+        -- fab is the carrier, `face` is the button. A Shadow() parented INSIDE the button draws
+        -- over it -- under ZIndexBehavior.Sibling a descendant always beats its ancestor -- so the
+        -- shadow has to be the button's sibling, which is what the carrier exists for.
+        fab = Create("Frame", gui, { Size = UDim2.new(0, 46, 0, 46),
             AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 16),
-            BackgroundColor3 = Theme.Active, BackgroundTransparency = 0, ZIndex = 100, Visible = false })
-        Decorate(fab, FAB_CORNER, {Theme.ToggleBorder, 0.05, 2})
+            BackgroundTransparency = 1, Active = true, ZIndex = 100, Visible = false })
+        Shadow(fab, 26, 0.6, 99)
+        local face = Create("TextButton", fab, { Size = UDim2.fromScale(1, 1),
+            BackgroundColor3 = Theme.Active, BackgroundTransparency = 0, ZIndex = 100 })
+        Decorate(face, FAB_CORNER, {Theme.ToggleBorder, 0.05, 2})
         -- Shares the button's exact rect and corner radius, so the black cannot cross the rim.
         -- A radial cannot do edge-to-edge here: covering the face needs ~2.5x oversize and the tail
         -- then hangs outside with nothing to clip it (ClipsDescendants clips to a RECTANGLE).
-        local plate = Create("Frame", fab, { BackgroundColor3 = COLOR_BLACK, BackgroundTransparency = FAB_PLATE_ALPHA,
+        local plate = Create("Frame", face, { BackgroundColor3 = COLOR_BLACK, BackgroundTransparency = FAB_PLATE_ALPHA,
             Size = UDim2.fromScale(1, 1), Active = false, Selectable = false, ZIndex = 101 })
         Decorate(plate, FAB_CORNER)
-        -- the stroke is ApplyStrokeMode.Border so it draws outside the frame and no child can
-        -- cover it. Two-tone: the second letter is black so it reads against the plate.
-        Create("TextLabel", fab, { Text = '<font color="#FFFFFF">S</font><font color="#000000">X</font>',
-            RichText = true, Size = UDim2.fromScale(1, 1), Font = Enum.Font.GothamBlack, TextSize = 18, ZIndex = 102 })
-        Interactive(fab, { Over = { BackgroundColor3 = Theme.Accent }, Out = { BackgroundColor3 = Theme.Active }, Time = 0.14 })
+        local mark = Create("ImageLabel", face, { Size = UDim2.fromScale(0.62, 0.62),
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+            ScaleType = Enum.ScaleType.Fit, ZIndex = 102 })
+        Interactive(face, { Over = { BackgroundColor3 = Theme.Accent }, Out = { BackgroundColor3 = Theme.Active }, Time = 0.14 })
+
+        -- An ImageLabel cannot load an http url, so the badge is fetched to disk and handed back
+        -- as a custom asset. Off-thread: the launcher is usable the whole time, it just wears the
+        -- lettering until the image lands, and keeps it for good if the fetch fails.
+        task.spawn(function()
+            local asset = (type(getcustomasset) == "function" and getcustomasset)
+                or (type(getsynasset) == "function" and getsynasset)
+            local id
+            if asset and writefile and isfile then
+                local file = ("%s/launcher_v%d.png"):format(CONFIG.FOLDER, FAB_SCHEMA)
+                local ready = isfile(file)
+                if not ready then
+                    local data
+                    -- raw.githubusercontent answers 0 bytes to a request carrying no User-Agent
+                    if HttpRequest then
+                        local ok, res = pcall(HttpRequest, { Url = FAB_ICON, Method = "GET",
+                            Headers = { ["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" } })
+                        data = ok and res and (res.Body or res.body) or nil
+                    end
+                    if not data or data == "" then
+                        local ok, got = pcall(game.HttpGet, game, FAB_ICON)
+                        data = ok and got or nil
+                    end
+                    ready = data ~= nil and data ~= "" and pcall(writefile, file, data)
+                end
+                if ready then
+                    local ok, res = pcall(asset, file)
+                    id = ok and res or nil
+                end
+            end
+            if not mark.Parent then return end
+            if id then
+                mark.Image = id
+            else
+                Create("TextLabel", face, { Text = '<font color="#FFFFFF">S</font><font color="#000000">X</font>',
+                    RichText = true, Size = UDim2.fromScale(1, 1), Font = Enum.Font.GothamBlack, TextSize = 18, ZIndex = 102 })
+            end
+        end)
+
         local fabStart, fabOrigin, fabMoved
-        fab.InputBegan:Connect(function(input)
+        face.InputBegan:Connect(function(input)
             if not IsPress(input.UserInputType) then return end
             fabStart, fabMoved = input.Position, false
             fabOrigin = fab.AbsolutePosition - gui.AbsolutePosition
@@ -2628,7 +2672,7 @@ function Library:CreateWindow(titleText)
                 fab.Position = UDim2.fromOffset(nx, ny)
             end)
         end)
-        fab.InputEnded:Connect(function(input)
+        face.InputEnded:Connect(function(input)
             if IsPress(input.UserInputType) and not fabMoved then SetMenuOpen(true) end
         end)
     end
