@@ -480,11 +480,21 @@ local function WriteSnap(snap, alpha)
     end
 end
 
+-- Completed callbacks run AFTER the traversal: one of them may start a new fade, and adding a key
+-- to a table being walked by next() is undefined. Reused buffer, so a settling fade allocates nothing.
+local FadeDone = {}
+
 local function StepFades()
-    local now, active = os.clock(), false
+    local now, active, fired = os.clock(), false, 0
     for snap, f in Fades do
         local a = (now - f.t) / f.d
-        if a >= 1 then a = 1 Fades[snap] = nil else active = true end
+        if a >= 1 then
+            a = 1
+            Fades[snap] = nil
+            if f.done then fired += 1 FadeDone[fired] = f.done end
+        else
+            active = true
+        end
         a = 1 - (1 - a) * (1 - a)       -- Quad Out, matching the TweenInfo this replaced
         WriteSnap(snap, f.from + (f.to - f.from) * a)
     end
@@ -492,17 +502,27 @@ local function StepFades()
     -- duration, so this always lets go within one of them. A cleanup hook would cut the closing
     -- fade the unload itself starts.
     if not active and FadeConn then FadeConn:Disconnect() FadeConn = nil end
+    for i = 1, fired do
+        local fn = FadeDone[i]
+        FadeDone[i] = nil
+        fn()
+    end
 end
 
 -- alpha 0 = resting, 1 = invisible. `time` omitted writes instantly. No Parent guard on the write:
 -- a property write to a destroyed instance is a legal no-op, and the check cost a read per element.
-function ApplySnapshot(snap, alpha, time)
+--
+-- onDone fires the frame the fade actually lands, which is what the caller wants for a terminal
+-- state like Visible = false. Retargeting a snapshot mid-flight replaces the entry and DROPS the
+-- pending onDone -- correct, because the transition it belonged to was cancelled.
+function ApplySnapshot(snap, alpha, time, onDone)
     if not time or time <= 0 then
         Fades[snap] = nil
         WriteSnap(snap, alpha)
+        if onDone then onDone() end
         return
     end
-    Fades[snap] = { from = snap.a or 0, to = alpha, t = os.clock(), d = time }
+    Fades[snap] = { from = snap.a or 0, to = alpha, t = os.clock(), d = time, done = onDone }
     if not FadeConn then FadeConn = RunService.RenderStepped:Connect(StepFades) end
 end
 
@@ -515,7 +535,6 @@ end
 -- Contents dissolve first while the pane is still solid, then the pane follows. Closing runs
 -- inside-out, opening runs outside-in, so the window always has a surface to appear on.
 local BODY_FADE, SHELL_FADE, FADE_STAGGER = 0.13, 0.18, 0.09
-local FADE_TOTAL = FADE_STAGGER + SHELL_FADE
 local ShellSnap, BodySnap, MenuGen, FadeBusy, FadePlan = nil, nil, 0, false, nil
 
 -- Records WHAT to snapshot; the snapshot is deferred. Tabs are built after the window, so an eager
@@ -533,6 +552,11 @@ local function RefreshFade()
     return ShellSnap ~= nil
 end
 
+-- The terminal state hangs off the fade that owns it, not a parallel timer. A timer had to be set
+-- longer than the animation and could still be skipped by the generation check, which left the
+-- window Visible with anything the snapshot missed still painted; the driver knows the exact frame
+-- the pane lands on. Nothing needs writing to rest afterwards either -- the driver finishes on the
+-- target value, so the old trailing correction was a no-op.
 function FadeVisible(inst, show)
     MenuGen += 1
     local gen = MenuGen
@@ -544,25 +568,24 @@ function FadeVisible(inst, show)
         ApplySnapshot(ShellSnap, 1) ApplySnapshot(BodySnap, 1)
         ApplySnapshot(ShellSnap, 0, SHELL_FADE)
         task.delay(FADE_STAGGER, function()
-            if gen == MenuGen then ApplySnapshot(BodySnap, 0, BODY_FADE) end
+            if gen ~= MenuGen then return end
+            ApplySnapshot(BodySnap, 0, BODY_FADE, function()
+                if gen == MenuGen then FadeBusy = false end
+            end)
         end)
     else
         if not RefreshFade() then return end
         FadeBusy = true
         ApplySnapshot(BodySnap, 1, BODY_FADE)
         task.delay(FADE_STAGGER, function()
-            if gen == MenuGen then ApplySnapshot(ShellSnap, 1, SHELL_FADE) end
+            if gen ~= MenuGen then return end
+            ApplySnapshot(ShellSnap, 1, SHELL_FADE, function()
+                if gen ~= MenuGen then return end
+                FadeBusy = false
+                inst.Visible = false
+            end)
         end)
     end
-    task.delay(FADE_TOTAL + 0.05, function()
-        if gen ~= MenuGen then return end
-        FadeBusy = false
-        if show then
-            ApplySnapshot(ShellSnap, 0) ApplySnapshot(BodySnap, 0)   -- land exactly on rest
-        else
-            inst.Visible = false
-        end
-    end)
 end
 
 -- The drag plate's pair, staged like the menu fade: the plate is translucent, so the window must
@@ -586,12 +609,10 @@ function FadeWindowIn(bodyTime, shellTime, stagger)
     -- reverse order: the pane comes back first so the contents never appear over a see-through one
     ApplySnapshot(ShellSnap, 0, shellTime)
     task.delay(stagger, function()
-        if gen == MenuGen then ApplySnapshot(BodySnap, 0, bodyTime) end
-    end)
-    task.delay(stagger + bodyTime + 0.05, function()
         if gen ~= MenuGen then return end
-        ApplySnapshot(ShellSnap, 0) ApplySnapshot(BodySnap, 0)
-        FadeBusy = false
+        ApplySnapshot(BodySnap, 0, bodyTime, function()
+            if gen == MenuGen then FadeBusy = false end
+        end)
     end)
 end
 
