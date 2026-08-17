@@ -156,10 +156,22 @@ end
 local IsConsole = (function() local ok, v = pcall(GuiService.IsTenFootInterface, GuiService) return ok and v end)()
 local IsMobile = not IsConsole and UIS.TouchEnabled and not UIS.KeyboardEnabled
 
+-- Every failure this library survives still gets said out loud. A pcall here only means "keep
+-- running", never "pretend it worked" -- a silently swallowed write or a blank icon is a bug the
+-- author can't see. HUB_NAME is empty until Configure runs, so load-time warnings need the literal.
+local function Warn(fmt, ...)
+    local who = CONFIG.HUB_NAME
+    warn(("[%s] "):format(who ~= "" and who or "SummitX") .. string.format(fmt, ...))
+end
+
 -- runs before anything touches disk
 if isfolder and makefolder then
     for _, path in { CONFIG.FOLDER, CONFIG.FOLDER .. "/configs" } do
-        if not isfolder(path) then pcall(makefolder, path) end
+        if not isfolder(path) then
+            local ok, err = pcall(makefolder, path)
+            -- everything below writes into this folder, so a failure here explains all of them
+            if not ok then Warn("could not create folder %q: %s", path, tostring(err)) end
+        end
     end
 end
 
@@ -1038,12 +1050,23 @@ local function ReportErr(err)
     if first == ErrLast and now - ErrAt < 5 then return end
     ErrLast, ErrAt = first, now
     task.defer(warn, "[" .. CONFIG.HUB_NAME .. "] " .. msg)
-    pcall(function()
+    -- the console warning above is the real report; the toast is a courtesy. If the toast itself
+    -- throws, say so rather than letting a broken notifier hide that it is broken.
+    local ok, err2 = pcall(function()
         Library:Notify({ Title = "Callback error", Content = (first:gsub("^.-:%d+:%s*", ""):gsub("<", "&lt;")), Duration = 6, Type = "error" })
     end)
+    if not ok then task.defer(warn, "[" .. CONFIG.HUB_NAME .. "] notifier failed: " .. tostring(err2)) end
+end
+-- nil means "this widget has no callback", which is normal. Anything else in that slot is a typo
+-- (a string, a table, a misspelled function name that resolved to nil's neighbour) and used to be
+-- dropped without a word, so the feature simply never ran.
+local function BadCallback(fn)
+    if fn == nil or type(fn) == "function" then return false end
+    Warn("expected a function, got a %s — that callback will never run", typeof(fn))
+    return true
 end
 local function Guard(fn, ...)
-    if type(fn) ~= "function" then return end
+    if type(fn) ~= "function" then BadCallback(fn) return end
     local ok, err = xpcall(fn, Traceback, ...)
     if not ok then ReportErr(err) end
 end
@@ -1052,7 +1075,7 @@ local function RunGuarded(fn, ...)      -- one shared body: no closure per invoc
     if not ok then ReportErr(err) end
 end
 local function SafeCall(fn, ...)
-    if type(fn) ~= "function" then return end
+    if type(fn) ~= "function" then BadCallback(fn) return end
     task.spawn(RunGuarded, fn, ...)
 end
 
@@ -1084,11 +1107,21 @@ end
 
 local TAB_ICONS = { Player = "user", Visuals = "eye", Teleport = "map-pin", Combat = "swords", Settings = "settings", Misc = "layout-grid" }
 local IconSets, PendingIcons = nil, {}
+-- A name that isn't in the set resolves to a blank image, which looks identical to "the icon
+-- library didn't load" and to "this widget has no icon". Say which it is, once per bad name --
+-- Lucide names are lowercase-and-hyphenated and a wrong case is the usual cause.
+local IconMisses = {}
 local function ApplyIcon(img, iconName, setName)
     if not IconSets then PendingIcons[#PendingIcons + 1] = { img, iconName, setName } return end
     local set = IconSets[setName or "Lucide"]
     local id = set and set[iconName]
     img.Image = id and ("rbxassetid://" .. id) or ""
+    if not id and next(IconSets) ~= nil and not IconMisses[iconName] then
+        IconMisses[iconName] = true
+        if not set then Warn("icon set %q does not exist", tostring(setName or "Lucide"))
+        else Warn("icon %q is not in the %s set — names are lowercase and hyphenated",
+            tostring(iconName), tostring(setName or "Lucide")) end
+    end
 end
 
 -- The endpoint is a stub that loadstrings a second, larger payload (~1s). The resolved table is
@@ -1102,7 +1135,10 @@ local function ValidSets(sets)
 end
 local function FlushIcons(sets)
     IconSets = sets
-    for _, p in PendingIcons do pcall(ApplyIcon, p[1], p[2], p[3]) end
+    for _, p in PendingIcons do
+        local ok, err = pcall(ApplyIcon, p[1], p[2], p[3])
+        if not ok then Warn("applying icon %q failed: %s", tostring(p[2]), tostring(err)) end
+    end
     table.clear(PendingIcons)
 end
 task.spawn(function()
@@ -1125,11 +1161,19 @@ task.spawn(function()
     if IconSets and innerUrl and innerUrl == cachedUrl then return end
 
     local sets
-    if ok then
+    if not ok then
+        Warn("icon library unreachable at %s: %s", ICON_URL, tostring(stub))
+    else
         local ok2, fn = pcall(loadstring, stub)
-        if ok2 and type(fn) == "function" then
+        if not ok2 or type(fn) ~= "function" then
+            Warn("icon loader stub would not compile: %s", tostring(fn))
+        else
             local ok3, result = pcall(fn)
-            sets = ok3 and ValidSets(result) or nil
+            if not ok3 then Warn("icon loader threw: %s", tostring(result))
+            else
+                sets = ValidSets(result)
+                if not sets then Warn("icon payload has no usable Lucide set") end
+            end
         end
     end
     if sets then
@@ -1138,12 +1182,15 @@ task.spawn(function()
             for packName, tbl in sets do
                 if type(tbl) == "table" then packs[packName] = tbl end -- helper functions can't be encoded
             end
-            pcall(function()
+            -- a failed cache write costs ~1s of refetch on every future launch, silently
+            local okW, errW = pcall(function()
                 writefile(cacheFile, HttpService:JSONEncode({ __v = ICON_SCHEMA, __src = innerUrl or ICON_URL, sets = packs }))
             end)
+            if not okW then Warn("could not cache icons to %q: %s", cacheFile, tostring(errW)) end
         end
         if not IconSets then FlushIcons(sets) end
     elseif not IconSets then
+        Warn("no icons available — every icon in the hub will be blank")
         FlushIcons({})
     end
 end)
@@ -1231,10 +1278,15 @@ function Library:SaveConfig()
     local data = SavedConfig or {}
     for flag, h in Private.Flags do
         local ok, v = pcall(h.Get)
-        if ok then data[flag] = v end
+        -- a getter that throws drops one setting out of the save; name it, or the value just
+        -- quietly stops persisting and looks like the config file is broken
+        if ok then data[flag] = v else Warn("flag %q getter failed, not saved: %s", flag, tostring(v)) end
     end
     SavedConfig = data
-    pcall(writefile, CONFIG.CONFIG_FILE, HttpService:JSONEncode(data))
+    local ok, err = pcall(function()
+        writefile(CONFIG.CONFIG_FILE, HttpService:JSONEncode(data))
+    end)
+    if not ok then Warn("could not save config to %q: %s", CONFIG.CONFIG_FILE, tostring(err)) end
 end
 -- One timer per burst of edits. A Heartbeat entry would wake 60 times a second forever just to
 -- ask whether 2s had passed on a config nobody is touching.
@@ -1254,7 +1306,14 @@ end
 function Library:LoadConfig()
     if not (canFile and isfile(CONFIG.CONFIG_FILE)) then return end
     local ok, data = pcall(function() return HttpService:JSONDecode(readfile(CONFIG.CONFIG_FILE)) end)
-    if not ok or type(data) ~= "table" then writefile(CONFIG.CONFIG_FILE, "{}") return end
+    if not ok or type(data) ~= "table" then
+        -- the next line DELETES every saved setting; say so before doing it, or a corrupt file
+        -- looks exactly like "the hub stopped remembering anything" with no explanation
+        Warn("config at %q is unreadable and is being reset — every saved setting is lost: %s",
+            CONFIG.CONFIG_FILE, tostring(data))
+        writefile(CONFIG.CONFIG_FILE, "{}")
+        return
+    end
     SavedConfig = data
     loading = true
     for flag, v in data do
@@ -1264,19 +1323,22 @@ function Library:LoadConfig()
     loading = false
 end
 
+-- Both of these name an unknown flag rather than answering nil/false: a typo'd or renamed flag is
+-- the single most common way a game script silently stops talking to its own widget.
 function Library:GetFlag(flag)
     local h = Private.Flags[flag]
-    if not h then return nil end
+    if not h then Warn("GetFlag(%q): no widget owns that flag", tostring(flag)) return nil end
     -- not `ok and v or nil` — that would turn a false toggle into nil
     local ok, v = pcall(h.Get)
     -- copied on the way out, so a caller sorting or clearing the result can't reach back into
     -- the widget that produced it
     if ok then return CloneValue(v) end
+    Warn("GetFlag(%q) getter failed: %s", tostring(flag), tostring(v))
     return nil
 end
 function Library:SetFlag(flag, value)
     local h = Private.Flags[flag]
-    if not h then return false end
+    if not h then Warn("SetFlag(%q): no widget owns that flag", tostring(flag)) return false end
     Guard(h.Set, value)
     return true
 end
@@ -1331,10 +1393,14 @@ function Library:SetPremium(value, state)
     SyncGates()
     local K = CONFIG.KEY
     if canFile and K.Enabled and K.SaveForPremiumOnly then
+        -- a failed write here is invisible until the next launch, when the gate reappears for
+        -- someone who already paid and looks like the key system rejecting them
         if value and AcceptedKey then
-            pcall(writefile, K.SaveFile, AcceptedKey)
+            local ok, err = pcall(writefile, K.SaveFile, AcceptedKey)
+            if not ok then Warn("could not save key to %q: %s", K.SaveFile, tostring(err)) end
         elseif not value and delfile and isfile(K.SaveFile) then
-            pcall(delfile, K.SaveFile)
+            local ok, err = pcall(delfile, K.SaveFile)
+            if not ok then Warn("could not delete key file %q: %s", K.SaveFile, tostring(err)) end
         end
     end
     if changed then
@@ -1383,17 +1449,24 @@ local function RunPremiumCheck(attempts)
         return
     end
 
+    -- Reports why it gave up. A silent failure downgrades a payer to the free tier and is
+    -- indistinguishable, from the outside, from them not being on the list at all.
     local function fetch(file)
+        local why
         for attempt = 1, attempts do
             -- cache-buster: GitHub's CDN otherwise serves a stale table for minutes after a publish
             local url = W.Base .. file .. "?_=" .. tostring(os.time()) .. tostring(attempt)
             local ok, body = pcall(game.HttpGet, game, url)
-            if ok and type(body) == "string" and #body > 0 then
+            if not ok then why = tostring(body)
+            elseif type(body) ~= "string" or #body == 0 then why = "empty response"
+            else
                 local decoded, data = pcall(HttpService.JSONDecode, HttpService, body)
                 if decoded and type(data) == "table" then return data end
+                why = "not valid JSON: " .. tostring(data)
             end
             if attempt < attempts then task.wait(1.5 * attempt) end
         end
+        Warn("whitelist fetch for %q failed after %d attempt(s): %s", file, attempts, tostring(why))
         return nil
     end
 
@@ -1409,6 +1482,7 @@ local function RunPremiumCheck(attempts)
 
     local whitelist = fetch(W.Whitelist)
     if whitelist == nil then
+        Warn("whitelist unreachable — everyone is on the free tier this session")
         Library:SetPremium(false, "free")   -- unreachable: degrade, don't lock out
         return
     end
@@ -2721,12 +2795,21 @@ function Library:CreateWindow(titleText)
                     if not data or data == "" then
                         local ok, got = pcall(game.HttpGet, game, FAB_ICON)
                         data = ok and got or nil
+                        if not ok then Warn("launcher badge fetch failed: %s", tostring(got)) end
                     end
-                    ready = data ~= nil and data ~= "" and pcall(writefile, file, data)
+                    if data == nil or data == "" then
+                        Warn("launcher badge came back empty from %s", FAB_ICON)
+                    else
+                        local okW, errW = pcall(writefile, file, data)
+                        ready = okW
+                        if not okW then Warn("could not write launcher badge to %q: %s", file, tostring(errW)) end
+                    end
                 end
                 if ready then
                     local ok, res = pcall(asset, file)
                     id = ok and res or nil
+                    -- the badge silently falls back to "SX" lettering; say why it did
+                    if not ok then Warn("getcustomasset rejected %q: %s", file, tostring(res)) end
                 end
             end
             if not mark.Parent then return end
@@ -2912,7 +2995,10 @@ local function ShowKeyGate(K, Matches, onPass)
             granted = true
             -- held, not written: SetPremium decides whether this account gets to skip the gate
             AcceptedKey = (box.Text:gsub("%s", ""))
-            if canFile and not K.SaveForPremiumOnly then pcall(writefile, K.SaveFile, AcceptedKey) end
+            if canFile and not K.SaveForPremiumOnly then
+                local okW, errW = pcall(writefile, K.SaveFile, AcceptedKey)
+                if not okW then Warn("could not save key to %q: %s", K.SaveFile, tostring(errW)) end
+            end
             Tween(shellScale, { Scale = 0.82 }, 0.2)
             ApplySnapshot(Snapshot(card), 1, 0.2)
             task.delay(0.28, function()
