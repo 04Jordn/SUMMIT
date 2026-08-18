@@ -69,7 +69,7 @@ local CONFIG = {
 local ENABLE_TAB_TRANSITION = false
 
 
--- RailGap is the spacing between controls sharing one row's rail.
+-- RailGap is the spacing between the pieces on one row's rail (a keybind pill and its checkmark).
 local L = {
     RowMin = 45, PadX = 15, PadY = 15, LabelGap = 3, RailGap = 10,
     TitleSize = 14, DescSize = 11,
@@ -1557,9 +1557,9 @@ local KEY_SHORT = {
 }
 local function KeyLabel(k) return KEY_SHORT[k] or k end
 
--- A row is a HOST, not a widget: a label block on the left, a rail on the right that controls
--- attach into. Several controls share one rail, so nothing declares how much width to reserve --
--- the rail measures itself and the label block flex-fills the rest. The rail is built on first use.
+-- A row is the chrome, not the widget: a label block on the left, a rail on the right the control
+-- attaches into. Nothing declares how much width to reserve -- the rail measures itself and the
+-- label block flex-fills the rest. The rail is built on first use, so a Paragraph never pays for one.
 local function Row(parent, props, activeState)
     local frame = Create("Frame", parent, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
         BackgroundColor3 = activeState and Theme.ToggleActive or Theme.Section, BackgroundTransparency = 0.15 })
@@ -1623,8 +1623,8 @@ local function Bind(ctx, props, flag, getter, setter, extraFlags, loopEntry)
     end
     function h.Destroy()
         h.Teardown()
-        -- a standalone widget owns the row it was given, so it takes the label with it; a control
-        -- sharing a row only ever removes itself
+        -- a control owns the row it was given, so it takes the label with it; h.Row is unset only
+        -- for the widgets that never asked for one
         local inst = h.Row or h.Instance
         if inst and inst.Parent then inst:Destroy() end
     end
@@ -1668,51 +1668,30 @@ local function DefineWidget(kind, build)
     end
 end
 
---------------------------------------------------------------------------- host rows
+--------------------------------------------------------------------------- control rows
 --
---  A host owns one row and lends out its rail. The standalone `tab:AddToggle{...}` is the same
---  thing with the row made for you, so the two shapes cannot drift.
+--  ONE control per row, and the row is made for it: a label block on the left, a rail on the
+--  right the control attaches into. The whole row is therefore the click target and is free to
+--  light up with the control's state. `host` is built here rather than by each widget so every
+--  control gets the same chrome.
 --
---  Exclusive marks that made-for-you case: the whole row is the click target and lights up with
---  the state. On a shared row a row-wide target would swallow clicks meant for its neighbours.
-
-local Host = {}
-Host.__index = Host
-
-function Container:AddRow(props, exclusive)
-    props = props or {}
-    local frame, stroke, nameLbl, descLbl, Rail = Row(self.Parent, props, props.Active)
-    local host = setmetatable({
-        Ctx = self, Instance = frame, Stroke = stroke, NameLabel = nameLbl, DescLabel = descLbl,
-        Rail = Rail, Exclusive = exclusive or false,
-    }, Host)
-    host.Gated = Gate(frame, props) ~= nil
-    return host
-end
-
-function Host:SetTitle(t) self.NameLabel.Text = t end
-function Host:SetDescription(t) if self.DescLabel then self.DescLabel.Text = t end end
-function Host:Destroy() self.Instance:Destroy() end
+--  The rail still takes more than one child -- a toggle's keybind pill sits beside its checkmark
+--  -- but that pairing belongs to a single widget. There is no way to hang two independent
+--  controls off one row, by design.
 
 local function DefineControl(kind, build)
-    Host["Add" .. kind] = function(self, props)
-        props = props or {}
-        local h = WireTeardown(build(self.Ctx, props, self))
-        -- a premium row already wears the lock; a premium control on a shared row wears its own
-        if type(h) == "table" and props.Premium and not self.Gated and h.Instance then
-            Gate(h.Instance, props, L.Corner6)
-        end
-        return h
-    end
     Container["Add" .. kind] = function(self, props)
         props = props or {}
-        local host = self:AddRow(props, true)
-        local h = host["Add" .. kind](host, props)
+        local frame, stroke, nameLbl, descLbl, Rail = Row(self.Parent, props, props.Active)
+        Gate(frame, props)
+        local h = WireTeardown(build(self, props, {
+            Instance = frame, Stroke = stroke, NameLabel = nameLbl, DescLabel = descLbl, Rail = Rail,
+        }))
         if type(h) == "table" then
-            h.Row = host.Instance
+            h.Row = frame
         elseif h == nil then
             -- a control that declined to build -- a keybind on mobile -- leaves no orphan label
-            host.Instance:Destroy()
+            frame:Destroy()
         end
         return h
     end
@@ -1720,8 +1699,8 @@ end
 
 --------------------------------------------------------------------------- keybind pill
 
--- laid out by the rail, so it carries no position of its own -- that is what lets it share a row
--- with another control without either knowing about the other
+-- laid out by the rail, so it carries no position of its own -- that is what lets it sit beside
+-- its toggle's checkmark without either knowing about the other
 local function BindPill(parent, props, action, saveId, canHold)
     if IsMobile then return nil end
     local pill = Create("TextButton", parent, { Text = KeyLabel(props.Keybind), RichText = false, AutomaticSize = Enum.AutomaticSize.X,
@@ -1869,22 +1848,18 @@ DefineControl("Toggle", function(ctx, props, host)
     local flag = FlagFor(ctx, props)
     local state = not not props.Default
     local frame, stroke, nameLbl = host.Instance, host.Stroke, host.NameLabel
-    local rowWide = host.Exclusive
-    if rowWide and state then
+    if state then
         frame.BackgroundColor3, stroke.Color, stroke.Transparency = Theme.ToggleActive, Theme.Active, 0.2
     end
-    -- when the toggle owns the row the whole row is the button; when it shares one the ring is,
-    -- or a stray click meant for a neighbouring control would flip the toggle instead
-    -- ZIndex 0, BELOW the row's content. Row() builds `content` first, so a full-row target added
-    -- afterwards at the same ZIndex draws over it -- later sibling wins on a tie -- and swallows
-    -- clicks meant for anything else on the rail.
-    local hit = rowWide and Create("TextButton", frame, { Size = UDim2.fromScale(1, 1), ZIndex = 0 }) or nil
+    -- The whole row is the button. ZIndex 0, BELOW the row's content: Row() builds `content` first,
+    -- so a full-row target added afterwards at the same ZIndex draws over it -- later sibling wins
+    -- on a tie -- and swallows clicks meant for the keybind pill sharing the rail.
+    local hit = Create("TextButton", frame, { Size = UDim2.fromScale(1, 1), ZIndex = 0 })
 
-    local ring = Create(rowWide and "Frame" or "TextButton", host.Rail(), { Size = UDim2.new(0, 16, 0, 16),
-        BackgroundTransparency = 1, LayoutOrder = 10,
-        -- inert only in the row-wide case: as a button it would sink the press and the row's hit
-        -- target would never see the middle of its own checkbox
-        Active = rowWide and false or nil, Selectable = rowWide and false or nil })
+    -- Inert: as a button the ring would sink the press and the row's hit target would never see
+    -- the middle of its own checkbox.
+    local ring = Create("Frame", host.Rail(), { Size = UDim2.new(0, 16, 0, 16),
+        BackgroundTransparency = 1, LayoutOrder = 10, Active = false, Selectable = false })
     -- The box never fills: a dark rim stays put through every state change and the glyph crossfades
     -- over it. The ring stays 16x16 -- it is the layout footprint on the rail, and carries no
     -- corner of its own: it is fully transparent, so rounding it rounds nothing.
@@ -1914,8 +1889,6 @@ DefineControl("Toggle", function(ctx, props, host)
         loopEntry.Active = state
     end
 
-    -- the row's own colours only follow the state when the toggle owns the row; on a shared row
-    -- one control repainting the whole row would speak for its neighbours too
     local tickFade
     local function ApplyVisual(animated)
         -- Only the glyph moves; the rim reads the same on and off. Cancel first so a fast
@@ -1928,7 +1901,6 @@ DefineControl("Toggle", function(ctx, props, host)
             tickFade = nil
             tick.ImageTransparency = state and 0 or 1
         end
-        if not rowWide then return end
         local fc = state and Theme.ToggleActive or Theme.Section
         local sc = state and Theme.Active or Theme.Stroke
         local tc = state and Theme.Text or Theme.SubText
@@ -1968,13 +1940,8 @@ DefineControl("Toggle", function(ctx, props, host)
             if on and state then SafeCall(props.Callback, state) end
         end)
     end
-    local tap = hit or ring
-    tap.MouseButton1Click:Connect(function() SetState(not state) end)
-    if rowWide then
-        Interactive(tap, { Target = frame, Over = {BackgroundTransparency = 0.02}, Out = {BackgroundTransparency = 0.15}, Time = 0.12 })
-    else
-        Interactive(tap, { Over = {BackgroundTransparency = 0.85}, Out = {BackgroundTransparency = 1}, Time = 0.12 })
-    end
+    hit.MouseButton1Click:Connect(function() SetState(not state) end)
+    Interactive(hit, { Target = frame, Over = {BackgroundTransparency = 0.02}, Out = {BackgroundTransparency = 0.15}, Time = 0.12 })
     if props.Keybind then
         BindPill(host.Rail(), props, function(down)
             if down == nil then SetState(not state) else SetState(down) end
@@ -2014,15 +1981,14 @@ DefineControl("Input", function(ctx, props, host)
     h, Changed = Bind(ctx, props, FlagFor(ctx, props), Get, SetText)
     h.Instance = field
 
-    -- focus tints the row it sits on, but only when the input is the only thing on that row
-    local lit = host.Exclusive
+    -- focus tints the row the field sits on, not just the field
     box.Focused:Connect(function()
         Tween(stroke, {Color = Theme.Accent, Transparency = 0.2})
-        if lit then Tween(frame, {BackgroundColor3 = Theme.InputFocus}) end
+        Tween(frame, {BackgroundColor3 = Theme.InputFocus})
     end)
     box.FocusLost:Connect(function()
         Tween(stroke, {Color = Theme.Stroke, Transparency = 0.7})
-        if lit then Tween(frame, {BackgroundColor3 = Theme.Section}) end
+        Tween(frame, {BackgroundColor3 = Theme.Section})
         Changed(box.Text)
     end)
     return h
@@ -2262,7 +2228,7 @@ DefineControl("Dropdown", function(ctx, props, host)
     local row, rail = host.Instance, host.Rail()
     local opener = Create("TextButton", rail, { Size = UDim2.new(0, 164, 0, 22), LayoutOrder = 50 })
     -- ZIndex 0 for the same reason as the toggle's row-wide target: it must sit under the rail
-    local header = host.Exclusive and Create("TextButton", row, { Size = UDim2.fromScale(1, 1), ZIndex = 0 }) or nil
+    local header = Create("TextButton", row, { Size = UDim2.fromScale(1, 1), ZIndex = 0 })
     local valLbl = Create("TextLabel", opener, { Text = "", RichText = false, Size = UDim2.new(1, -20, 1, 0),
         TextColor3 = Theme.SubText, Font = Enum.Font.Gotham, TextSize = 13,
         TextXAlignment = Enum.TextXAlignment.Right, TextTruncate = Enum.TextTruncate.AtEnd })
@@ -2398,13 +2364,8 @@ DefineControl("Dropdown", function(ctx, props, host)
 
     row.Destroying:Connect(Close)
     opener.MouseButton1Click:Connect(Open)
-    if header then
-        header.MouseButton1Click:Connect(Open)
-        Interactive(header, { Target = row, Over = {BackgroundTransparency = 0.02}, Out = {BackgroundTransparency = 0.15}, Time = 0.12 })
-    else
-        -- the text lives on the label, so the hover has to be aimed there and not at the button
-        Interactive(opener, { Target = valLbl, Over = {TextColor3 = Theme.Text}, Out = {TextColor3 = Theme.SubText}, Time = 0.12 })
-    end
+    header.MouseButton1Click:Connect(Open)
+    Interactive(header, { Target = row, Over = {BackgroundTransparency = 0.02}, Out = {BackgroundTransparency = 0.15}, Time = 0.12 })
     return h
 end)
 
