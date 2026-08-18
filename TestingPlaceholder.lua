@@ -1142,6 +1142,11 @@ local function FlushIcons(sets)
     table.clear(PendingIcons)
 end
 task.spawn(function()
+    -- Yields before touching disk. task.spawn runs its body inline until the first yield, and the
+    -- cached blob is ~560KB across ten packs -- 4.4ms of readfile + JSONDecode landing on the same
+    -- frame the hub boots. Every icon already queues into PendingIcons until this resolves, so
+    -- arriving a frame later is invisible; arriving during Init is 4.4ms of the boot hitch.
+    task.wait()
     local cachedUrl
     local cacheFile = CONFIG.FOLDER .. "/icons.json"
     if isfile and readfile and isfile(cacheFile) then
@@ -1264,9 +1269,18 @@ local function RegisterFlag(flag, handle)
     end
     Private.Flags[flag] = handle
     if SavedConfig ~= nil and SavedConfig[flag] ~= nil and not loading then
-        loading = true
-        Guard(handle.Set, SavedConfig[flag])
-        loading = false
+        -- One resumption later, NOT inline. Bind registers the flag before it returns, and a
+        -- widget's Changed fan-out is whatever Bind hands back -- so a Set dispatched from here
+        -- lands while `Changed` is still nil and the slider and dropdown throw on it. The value is
+        -- captured now so a save landing in between cannot rewrite what gets restored.
+        local value = SavedConfig[flag]
+        task.defer(function()
+            -- destroyed, or its flag taken over by another widget, before this ran
+            if Private.Flags[flag] ~= handle then return end
+            loading = true
+            Guard(handle.Set, value)
+            loading = false
+        end)
     end
 end
 local function UnregisterFlag(flag) if flag then Private.Flags[flag] = nil end end
@@ -1496,7 +1510,11 @@ end
 function Library:RegisterTab(name, builderFunc, subtitle, icon)
     table.insert(Private.Tabs, { Name = name, Build = builderFunc, Subtitle = subtitle, Icon = icon or TAB_ICONS[name] or "circle" })
 end
-function Library:BuildTabs(windowObj) for _, t in Private.Tabs do t.Build(windowObj:MakeTab(t.Name, t.Subtitle, t.Icon), windowObj) end end
+-- Hands each builder to MakeTab rather than calling it: only the visible tab is built inline, the
+-- rest are drained a frame apart. See the warm-up queue in CreateWindow.
+function Library:BuildTabs(windowObj)
+    for _, t in Private.Tabs do windowObj:MakeTab(t.Name, t.Subtitle, t.Icon, t.Build) end
+end
 
 --=====================================================================================
 --  11. Rows, bindings, widget registry
@@ -2433,8 +2451,11 @@ function Library:CreateWindow(titleText)
     local baseW, baseH = IsMobile and 560 or 880, IsMobile and 330 or 520
     local SIDEBAR_W = IsMobile and 150 or 170
 
-    -- root wraps main so the shadow can sit behind it; a child always draws over its parent's fill
-    local root = Create("Frame", gui, { Size = UDim2.new(0, baseW, 0, baseH), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0), BackgroundTransparency = 1, Active = true, ZIndex = 1 })
+    -- root wraps main so the shadow can sit behind it; a child always draws over its parent's fill.
+    -- Deliberately UNPARENTED: everything below hangs off root, and each Instance added to a live
+    -- tree invalidates layout, which measured ~20% of construction across a boot-sized tree. It is
+    -- parented at the bottom of this function, once the chrome and the first tab are in.
+    local root = Create("Frame", nil, { Size = UDim2.new(0, baseW, 0, baseH), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0), BackgroundTransparency = 1, Active = true, ZIndex = 1 })
     local uiScale = Create("UIScale", root, {Scale = DEFAULT_SCALE * SCALE_BASE})
     local shadow = Shadow(root, 120, 0.62, 0)
     local main = Create("Frame", root, { Size = UDim2.fromScale(1, 1),
@@ -2663,6 +2684,9 @@ function Library:CreateWindow(titleText)
     PrimeFade(root, { [root] = true, [shadow] = true, [main] = true, [mainStroke] = true }, skipGhost)
 
     function RefitWindow()
+        -- A detached root measures 0 on every axis, and the clamp below would read that as a
+        -- zero-width window and shove it to x = 100. The attach re-queues, so nothing is lost.
+        if not root.Parent then return end
         local vp, sc = gui.AbsoluteSize, math.max(uiScale.Scale, 0.01)
         if vp.X < 1 or vp.Y < 1 then vp = Camera and Camera.ViewportSize or vp end
         if vp.X < 1 or vp.Y < 1 then return end
@@ -2846,7 +2870,38 @@ function Library:CreateWindow(titleText)
 
     local tabSetters, tabHandles = {}, {}
 
-    function WindowObj:MakeTab(name, subtitle, icon)
+    -- Tab BODIES build one per frame; every tab's SHELL (button, page, selector slot) is built
+    -- inline so the sidebar is complete and correctly ordered on frame one. Building eight tabs of
+    -- widgets inside Init measured 35ms of a 49ms boot, and seven of those pages are hidden the
+    -- whole time. The queue always drains on its own, so a Default-on toggle on the last tab still
+    -- fires its callback and still registers its flag -- a few frames later rather than instantly.
+    local warmQueue, warmAt, warmConn = {}, 1, nil
+    -- Guarded: a throwing builder used to unwind Init, and from inside the driver below it would
+    -- take every tab after it down with it. ReportErr warns to console and toasts.
+    local function BuildBody(tab)
+        local body = tab.Body
+        if not body then return false end
+        tab.Body = nil
+        RunGuarded(body, tab, WindowObj)
+        return true
+    end
+    local function WarmStep()
+        while warmAt <= #warmQueue do
+            local tab = warmQueue[warmAt]
+            warmAt += 1
+            if BuildBody(tab) then return true end
+        end
+        return false
+    end
+    local function StartWarm()
+        if warmConn then return end
+        warmConn = RunService.Heartbeat:Connect(function()
+            if not WarmStep() then warmConn:Disconnect() warmConn = nil end
+        end)
+    end
+    Root.Add(function() if warmConn then warmConn:Disconnect() warmConn = nil end end)
+
+    function WindowObj:MakeTab(name, subtitle, icon, body)
         local isActiveTab = self.FirstTab
         self.FirstTab = false
         local tabIndex = #tabSetters + 1
@@ -2867,6 +2922,8 @@ function Library:CreateWindow(titleText)
             selector.Size = UDim2.new(0, 3, 0, 16)
         end
 
+        local tab      -- built below; Select needs it to force a still-queued body
+
         local function SetActive(on)
             page.Visible = on
             Tween(btn, { BackgroundTransparency = on and 0.85 or 1 }, 0.18)
@@ -2877,6 +2934,9 @@ function Library:CreateWindow(titleText)
 
         local function Select()
             if page.Visible then return end
+            -- ahead of the switch, not after: the page has to be populated before it is shown, or
+            -- clicking a tab the warm-up has not reached yet lands on an empty panel
+            BuildBody(tab)
             CloseActivePopup()
             for _, f in tabSetters do f(false) end
             SetActive(true)
@@ -2898,9 +2958,12 @@ function Library:CreateWindow(titleText)
         Interactive(btn, { Over = {BackgroundTransparency = 0.93}, Out = {BackgroundTransparency = 1},
                            Time = 0.15, Enabled = function() return not page.Visible end })
 
-        local tab = NewContainer(page, name, page, WindowObj)
+        tab = NewContainer(page, name, page, WindowObj)
         tab.Page, tab.Button, tab.Select, tab.Index = page, btn, Select, tabIndex
+        tab.Body = body
         tabHandles[tabIndex], tabHandles[name] = tab, tab
+        -- the tab on screen has to be populated before the frame ends; the rest can wait
+        if isActiveTab then BuildBody(tab) else warmQueue[#warmQueue + 1] = tab StartWarm() end
         return tab
     end
 
@@ -2913,6 +2976,16 @@ function Library:CreateWindow(titleText)
     function WindowObj.IsOpen() return menuOpen end
     function WindowObj:Notify(cfg) return Library:Notify(cfg) end
     function WindowObj:OnToggle(fn) if type(fn) == "function" then ToggleHooks[#ToggleHooks + 1] = fn end end
+
+    -- The tree goes live here, not at creation. task.defer resumes once the calling thread runs
+    -- dry, which is after Init's BuildTabs and LoadConfig -- so the whole boot tree is assembled
+    -- detached and lands in one parent write. A game script that yields inside a tab builder just
+    -- attaches sooner, which is exactly what every build did before.
+    task.defer(function()
+        if root.Parent or not gui.Parent then return end
+        root.Parent = gui
+        QueueRefit()
+    end)
 
     SetCursor(true)
     return WindowObj
