@@ -1,29 +1,22 @@
 --=====================================================================================
 --  SUMMITX LOADER
 --
---  This is the ONLY url anyone ever pastes:
+--  Returns the Library, exactly like loading SummitX.lua directly:
 --
---      loadstring(game:HttpGet("https://raw.githubusercontent.com/04Jordn/SUMMIT/main/loader.lua"))()
+--      local Library = loadstring(game:HttpGet(
+--          "https://raw.githubusercontent.com/04Jordn/SUMMIT/refs/heads/main/loader.lua"))()
 --
---  It holds no logic and no secrets. Point TARGET at whichever script this loader
---  is for; move it, rename the repo, change host entirely, and every loadstring
---  already in circulation follows, because none of them ever pointed at the script
---  directly.
---
---  For a second game, copy this file under another name (loader-fut.lua) and change
---  TARGET. Nothing here inspects the game -- premium is decided by WHO is running
---  the script, never by where they are running it.
+--  Knows nothing about any game. It exists so game scripts point at a URL that
+--  never moves: rename the library file, restructure the repo, change host, and
+--  you edit SOURCE below instead of every script you have ever shipped.
 --=====================================================================================
 
--- NOTE: your repo stores the game scripts WITHOUT a .lua extension -- the files are
--- literally `MafiaGame` and `FutGame`. Getting this wrong is a silent 404, which
--- looks from in-game like the loader simply doing nothing.
-local TARGET = "https://raw.githubusercontent.com/04Jordn/SUMMIT/refs/heads/main/MafiaGame"
+local SOURCE = "https://raw.githubusercontent.com/04Jordn/SUMMIT/refs/heads/main/SummitX.lua"
 
--- Cache-buster: raw.githubusercontent serves through a CDN that will happily hand
--- out a stale file for minutes after a push, which looks exactly like "my update
--- didn't apply".
-local url = TARGET .. (TARGET:find("?") and "&" or "?") .. "_=" .. tostring(os.time())
+-- Cache-buster: raw.githubusercontent sends Cache-Control: max-age=300, so without
+-- it a fresh upload keeps serving the previous copy for five minutes -- which looks
+-- exactly like "my update didn't apply".
+local url = SOURCE .. (SOURCE:find("?") and "&" or "?") .. "_=" .. tostring(os.time())
 
 local ok, body = pcall(game.HttpGet, game, url)
 if not ok or type(body) ~= "string" or #body == 0 then
