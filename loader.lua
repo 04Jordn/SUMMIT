@@ -15,7 +15,10 @@
 --  the script, never by where they are running it.
 --=====================================================================================
 
-local TARGET = "https://raw.githubusercontent.com/04Jordn/SUMMIT/main/NewUIMafia.lua"
+-- NOTE: your repo stores the game scripts WITHOUT a .lua extension -- the files are
+-- literally `MafiaGame` and `FutGame`. Getting this wrong is a silent 404, which
+-- looks from in-game like the loader simply doing nothing.
+local TARGET = "https://raw.githubusercontent.com/04Jordn/SUMMIT/refs/heads/main/MafiaGame"
 
 -- Cache-buster: raw.githubusercontent serves through a CDN that will happily hand
 -- out a stale file for minutes after a push, which looks exactly like "my update
