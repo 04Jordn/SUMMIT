@@ -1212,6 +1212,20 @@ function Library:Notify(cfg)
     return entry
 end
 
+-- A bounded WaitForChild that REPORTS instead of handing back a quiet nil. This exists to stop the
+-- one mistake that breaks a hub silently: a game lookup misses, the script guards its RegisterTab
+-- calls on the result, nothing registers, and Init builds a window with only Settings in it -- which
+-- reads as broken rather than as wrong. Call it BEFORE Init, where yielding is safe, and bail on nil.
+function Library:Await(parent, name, timeout)
+    local found = parent:WaitForChild(name, timeout or 10)
+    if not found then
+        self:Notify({ Title = "Couldn't load", Type = "error", Duration = 10,
+            Content = ("%s never appeared, so the features have nothing to attach to."):format(tostring(name)),
+            SubContent = "Rejoin and run the script again." })
+    end
+    return found
+end
+
 -- NOTHING HERE CATCHES. A callback that throws goes red in F9 with the traceback rooted at the
 -- throw site and stops the thread it was on: no toast, no warning, no retirement, no switch to
 -- flip. task.spawn is NOT a net -- it means a callback that yields cannot hold the input handler
