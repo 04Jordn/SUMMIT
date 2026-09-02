@@ -2633,12 +2633,25 @@ function Container:AddSection(title, startClosed)
     local body = Create("Frame", box, { Size = UDim2.new(1, 0, 0, 0), BackgroundTransparency = 1, Visible = open, LayoutOrder = 1 })
     local bodyList = List(body, 8)
 
+    -- ⚠ DIVIDE BY THE UI SCALE. AbsoluteContentSize is in ABSOLUTE pixels; Size.Offset is in local
+    -- pre-scale units that the window's UIScale then multiplies. Feeding one into the other scales
+    -- it twice -- at 1.15 that is 15% of dead space inside every section.
     -- A collapsed body is Visible = false, which the box's UIListLayout already skips, so the box
     -- shrinks to its header on its own -- no special case for the closed state.
-    local function FitBody() body.Size = UDim2.new(1, 0, 0, bodyList.AbsoluteContentSize.Y) end
-    local function FitBox() box.Size = UDim2.new(1, 0, 0, boxList.AbsoluteContentSize.Y + BOX_PAD_Y) end
+    local function FitBody()
+        local sc = (UI.Scale and UI.Scale.Scale) or 1
+        body.Size = UDim2.new(1, 0, 0, bodyList.AbsoluteContentSize.Y / sc)
+    end
+    local function FitBox()
+        local sc = (UI.Scale and UI.Scale.Scale) or 1
+        box.Size = UDim2.new(1, 0, 0, boxList.AbsoluteContentSize.Y / sc + BOX_PAD_Y)
+    end
     bodyList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(FitBody)
     boxList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(FitBox)
+    -- the UI Scale slider changes the divisor, so both have to be re-taken when it moves
+    if UI.Scale then
+        UI.Scale:GetPropertyChangedSignal("Scale"):Connect(function() FitBody(); FitBox() end)
+    end
     FitBody()
     FitBox()
 
@@ -3103,9 +3116,26 @@ function Library:CreateWindow(titleText)
         local tabIcon = Create("ImageLabel", btn, { Size = UDim2.new(0, 17, 0, 17), Position = UDim2.new(0, 16, 0.5, -8), ImageColor3 = isActiveTab and Theme.Accent or Theme.TabText, ZIndex = 4 })
         ApplyIcon(tabIcon, icon or "circle")
         local tabLbl = Create("TextLabel", btn, { Text = name, Size = UDim2.new(1, -48, 1, 0), Position = UDim2.new(0, 40, 0, 0), TextColor3 = isActiveTab and Theme.Text or Theme.TabText, Font = Enum.Font.GothamBold, TextSize = L.TitleSize, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 4 })
-        local page = Create("ScrollingFrame", pageHost, { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = isActiveTab })
-        List(page, 12, false, Enum.HorizontalAlignment.Center)
+        -- ⚠ CanvasSize is DRIVEN, and AutomaticCanvasSize is off. Same reason a section sizes
+        -- itself off its layout: AutomaticCanvasSize measures child EXTENTS, so a child that is
+        -- transiently oversized while the tab is being built leaves the canvas too tall for good
+        -- and the page keeps scrolling past its own last widget. The layout's content size is a
+        -- measurement of what is actually laid out, and it shrinks back when a section collapses.
+        local PAGE_PAD_Y = 4 + 8            -- Decorate's PaddingTop + PaddingBottom, below
+        local page = Create("ScrollingFrame", pageHost, { Size = UDim2.fromScale(1, 1),
+            BackgroundTransparency = 1, Visible = isActiveTab,
+            AutomaticCanvasSize = Enum.AutomaticSize.None })
+        local pageList = List(page, 12, false, Enum.HorizontalAlignment.Center)
         Decorate(page, nil, nil, {4, 8, 12, 12})
+        -- ⚠ Same unit trap as the sections: AbsoluteContentSize is absolute, CanvasSize.Offset is
+        -- pre-scale. Divide, or the canvas is 15% taller than the page and every tab scrolls past
+        -- its own last widget.
+        local function FitCanvas()
+            page.CanvasSize = UDim2.new(0, 0, 0, pageList.AbsoluteContentSize.Y / math.max(uiScale.Scale, 0.01) + PAGE_PAD_Y)
+        end
+        pageList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(FitCanvas)
+        uiScale:GetPropertyChangedSignal("Scale"):Connect(FitCanvas)
+        FitCanvas()
 
         local selY = (tabIndex - 1) * (L.TabH + L.TabGap) + L.TabH / 2
         if isActiveTab then
