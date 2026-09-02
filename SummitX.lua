@@ -1640,6 +1640,7 @@ function Library:RegisterTab(name, builderFunc, subtitle, icon)
 end
 function Library:BuildTabs(windowObj)
     for _, t in Private.Tabs do windowObj:MakeTab(t.Name, t.Subtitle, t.Icon, t.Build) end
+    windowObj:BuildActive()
 end
 
 --=====================================================================================
@@ -3072,10 +3073,10 @@ function Library:CreateWindow(titleText)
     -- and correctly ordered on frame one. The queue always drains on its own, so a Default-on
     -- toggle on the last tab still fires its callback and registers its flag -- a few frames late.
     local warmQueue, warmAt, warmConn = {}, 1, nil
-    -- Called flat. The first tab builds inline, so a throwing builder there unwinds Init and lands
-    -- red in the game script that called it -- which is where a broken tab belongs. From the warm
-    -- driver it costs only its own tab: warmAt has already advanced past this one before the body
-    -- runs, so the next Heartbeat picks up at the tab after it rather than retrying this one.
+    -- Called flat. A throwing builder lands red in the game script that called it -- which is where
+    -- a broken tab belongs -- and costs only its own tab: warmAt has already advanced past this one
+    -- before the body runs, so the next Heartbeat picks up at the tab after it rather than
+    -- retrying this one. The active tab is drained through the same queue for exactly that reason.
     --!mv:omit
     local function BuildBody(tab)
         local body = tab.Body
@@ -3179,9 +3180,20 @@ function Library:CreateWindow(titleText)
         tab.Page, tab.Button, tab.Select, tab.Index = page, btn, Select, tabIndex
         tab.Body = body
         tabHandles[tabIndex], tabHandles[name] = tab, tab
-        if isActiveTab then BuildBody(tab) else warmQueue[#warmQueue + 1] = tab; StartWarm() end
+        -- EVERY SHELL FIRST, THEN ANY BODY. The active tab's body used to build right here, inside
+        -- the MakeTab loop, so a builder that threw unwound BuildTabs and the sidebar was left
+        -- holding a single button -- six working tabs hidden behind one fault, which reads as "the
+        -- whole hub is broken" instead of "one tab is". Queued at the FRONT and drained by
+        -- BuildTabs the instant the loop finishes, it still builds before the window mounts and a
+        -- throw still lands red in the game script; the rail is just already standing when it does.
+        if isActiveTab then table.insert(warmQueue, 1, tab) else warmQueue[#warmQueue + 1] = tab end
+        StartWarm()
         return tab
     end
+
+    -- Drains the front of the queue -- the active tab -- synchronously, so its page is populated
+    -- before the window is shown. Everything behind it keeps building one per frame.
+    function WindowObj:BuildActive() WarmStep() end
 
     function WindowObj:SelectTab(which)
         local t = tabHandles[which]
