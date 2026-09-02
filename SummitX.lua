@@ -2614,16 +2614,33 @@ function Container:AddSection(title, startClosed)
             :format(CONFIG.HUB_NAME), 0)
     end
     local open = not startClosed
-    local box = Create("Frame", self.Parent, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = Theme.Sidebar, BackgroundTransparency = 0.45 })
+    -- ⚠ NEITHER box NOR body USES AutomaticSize, and they must not go back to it. Stacking three
+    -- levels of AutomaticSize.Y -- box over body over the rows -- does not resolve reliably when
+    -- the subtree is built inside an invisible page, which is exactly what the tab warm-up does.
+    -- The symptom is a section whose CONTENTS draw (nothing clips them) while the box itself
+    -- measures zero, so its background and border are missing until something forces a relayout:
+    -- collapsing it, dragging the window, or going fullscreen. Both sizes are driven straight off
+    -- their UIListLayout's AbsoluteContentSize instead, which is a measurement, not a negotiation.
+    local BOX_PAD_Y = 12 + 14           -- Decorate's PaddingTop + PaddingBottom, below
+    local box = Create("Frame", self.Parent, { Size = UDim2.new(1, 0, 0, BOX_PAD_Y), BackgroundColor3 = Theme.Sidebar, BackgroundTransparency = 0.45 })
     Decorate(box, L.Corner8, {Theme.Stroke, 0.6, 1}, {12, 14, 12, 12})
-    List(box, 12)
+    local boxList = List(box, 12)
     local head = Create("TextButton", box, { Size = UDim2.new(1, 0, 0, 22), LayoutOrder = 0 })
     local chev = Create("ImageLabel", head, { Size = UDim2.new(0, 13, 0, 13), Position = UDim2.new(0, 4, 0.5, -6), ImageColor3 = Theme.SubText, Rotation = open and 0 or -90 })
     ApplyIcon(chev, "chevron-down")
     local lbl = Create("TextLabel", head, { Text = tostring(title):upper(), Size = UDim2.new(1, -30, 1, 0), Position = UDim2.new(0, 24, 0, 0),
         TextColor3 = Theme.SubText, Font = Enum.Font.GothamBold, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd })
-    local body = Create("Frame", box, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Visible = open, LayoutOrder = 1 })
-    List(body, 8)
+    local body = Create("Frame", box, { Size = UDim2.new(1, 0, 0, 0), BackgroundTransparency = 1, Visible = open, LayoutOrder = 1 })
+    local bodyList = List(body, 8)
+
+    -- A collapsed body is Visible = false, which the box's UIListLayout already skips, so the box
+    -- shrinks to its header on its own -- no special case for the closed state.
+    local function FitBody() body.Size = UDim2.new(1, 0, 0, bodyList.AbsoluteContentSize.Y) end
+    local function FitBox() box.Size = UDim2.new(1, 0, 0, boxList.AbsoluteContentSize.Y + BOX_PAD_Y) end
+    bodyList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(FitBody)
+    boxList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(FitBox)
+    FitBody()
+    FitBox()
 
     local function SetOpen(v)
         v = not not v
