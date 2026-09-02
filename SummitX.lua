@@ -2194,6 +2194,39 @@ DefineControl("Keybind", function(ctx, props, host)
     return h
 end)
 
+--------------------------------------------------------------------------- input
+
+DefineControl("Input", function(ctx, props, host)
+    Expect(props, "Name")
+    local frame, stroke = host.Instance, host.Stroke
+    local field = Create("Frame", host.Rail(), { Size = UDim2.new(0, 160, 0, 26), LayoutOrder = 30,
+        BackgroundColor3 = Theme.BindBackground, BackgroundTransparency = 0.5 })
+    Decorate(field, L.Corner6, {Theme.Stroke, 0.7, 1})
+    local box = ClippedBox(field, { Text = tostring(props.Default or ""), PlaceholderText = props.Placeholder or "...",
+        TextColor3 = Theme.Text, PlaceholderColor3 = Theme.Placeholder })
+
+    local Changed
+    local function Get() return box.Text end
+    local function SetText(t)
+        box.Text = tostring(t)
+        Changed(box.Text)
+    end
+    local h
+    h, Changed = Bind(ctx, props, FlagFor(ctx, props), Get, SetText)
+    h.Instance = field
+
+    box.Focused:Connect(function()
+        Tween(stroke, {Color = Theme.Accent, Transparency = 0.2})
+        Tween(frame, {BackgroundColor3 = Theme.InputFocus})
+    end)
+    box.FocusLost:Connect(function()
+        Tween(stroke, {Color = Theme.Stroke, Transparency = 0.7})
+        Tween(frame, {BackgroundColor3 = Theme.Section})
+        Changed(box.Text)
+    end)
+    return h
+end)
+
 --------------------------------------------------------------------------- slider
 
 DefineControl("Slider", function(ctx, props, host)
