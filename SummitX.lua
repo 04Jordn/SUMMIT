@@ -1910,27 +1910,6 @@ DefineWidget("Divider", function(ctx)
     return wrap
 end)
 
-DefineWidget("Label", function(ctx, props)
-    local text = type(props) == "string" and props or props.Name or props.Text or ""
-    local lbl = Create("TextLabel", ctx.Parent, { Text = text, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
-        TextColor3 = Theme.SubText, Font = Enum.Font.Gotham, TextSize = 13, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left })
-    Decorate(lbl, nil, nil, {2, 2, L.PadX, L.PadX})
-    return lbl
-end)
-
-DefineWidget("Watermark", function(ctx, props)
-    local text = type(props) == "string" and props or props.Name or props.Text or ""
-    local link = type(props) == "table" and props.Link or text
-    local wm = Create("TextButton", ctx.Parent, { Text = text, RichText = false, Size = UDim2.new(1, 0, 0, 42), TextColor3 = Theme.SubText,
-        Font = Enum.Font.GothamBold, TextSize = 22, TextTransparency = 0.1 })
-    wm.MouseButton1Click:Connect(function()
-        if setclipboard then setclipboard(link) end
-        wm.Text = "Copied to clipboard"
-        task.delay(1.5, function() if wm.Parent then wm.Text = text end end)
-    end)
-    return wm
-end)
-
 --------------------------------------------------------------------------- buttons
 
 local function BuildButton(parent, props, size)
@@ -2191,39 +2170,6 @@ DefineControl("Keybind", function(ctx, props, host)
     ApplyVisual(false)
     hit.MouseButton1Click:Connect(function() SetState(not state) end)
     Interactive(hit, { Target = frame, Over = {BackgroundTransparency = 0.02}, Out = {BackgroundTransparency = 0.15}, Time = 0.12 })
-    return h
-end)
-
---------------------------------------------------------------------------- input
-
-DefineControl("Input", function(ctx, props, host)
-    Expect(props, "Name")
-    local frame, stroke = host.Instance, host.Stroke
-    local field = Create("Frame", host.Rail(), { Size = UDim2.new(0, 160, 0, 26), LayoutOrder = 30,
-        BackgroundColor3 = Theme.BindBackground, BackgroundTransparency = 0.5 })
-    Decorate(field, L.Corner6, {Theme.Stroke, 0.7, 1})
-    local box = ClippedBox(field, { Text = tostring(props.Default or ""), PlaceholderText = props.Placeholder or "...",
-        TextColor3 = Theme.Text, PlaceholderColor3 = Theme.Placeholder })
-
-    local Changed
-    local function Get() return box.Text end
-    local function SetText(t)
-        box.Text = tostring(t)
-        Changed(box.Text)
-    end
-    local h
-    h, Changed = Bind(ctx, props, FlagFor(ctx, props), Get, SetText)
-    h.Instance = field
-
-    box.Focused:Connect(function()
-        Tween(stroke, {Color = Theme.Accent, Transparency = 0.2})
-        Tween(frame, {BackgroundColor3 = Theme.InputFocus})
-    end)
-    box.FocusLost:Connect(function()
-        Tween(stroke, {Color = Theme.Stroke, Transparency = 0.7})
-        Tween(frame, {BackgroundColor3 = Theme.Section})
-        Changed(box.Text)
-    end)
     return h
 end)
 
@@ -2647,6 +2593,12 @@ end)
 --------------------------------------------------------------------------- section
 
 function Container:AddSection(title, startClosed)
+    -- Sections do not nest. One level is the whole grouping model: a tab holds sections, a section
+    -- holds widgets. Said out loud rather than silently building a second level nobody styled for.
+    if self.IsSection then
+        error(("[%s] sections do not nest -- put these widgets on the tab, or in one section")
+            :format(CONFIG.HUB_NAME), 0)
+    end
     local open = not startClosed
     local box = Create("Frame", self.Parent, { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = Theme.Sidebar, BackgroundTransparency = 0.45 })
     Decorate(box, L.Corner8, {Theme.Stroke, 0.6, 1}, {12, 14, 12, 12})
@@ -2670,7 +2622,7 @@ function Container:AddSection(title, startClosed)
     Interactive(head, { Target = lbl, Over = {TextColor3 = Theme.Text}, Out = {TextColor3 = Theme.SubText}, Time = 0.12 })
 
     local sub = NewContainer(body, self.TabName, self.Page, self.Window)
-    sub.Instance, sub.SetOpen, sub.IsOpen = box, SetOpen, function() return open end
+    sub.Instance, sub.SetOpen, sub.IsOpen, sub.IsSection = box, SetOpen, function() return open end, true
     return sub
 end
 
