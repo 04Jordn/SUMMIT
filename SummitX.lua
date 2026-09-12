@@ -1071,10 +1071,18 @@ end
 --
 -- One toast per session, however many lookups fail. A script that awaits eight things would
 -- otherwise stack eight identical cards; the console still gets every one.
+--
+-- ⚠ AND ONE FULL WAIT PER SESSION. Once a lookup has timed out, this is not the game the script
+-- was built for, and every remaining lookup is going to time out too. Paying the full timeout for
+-- each of them is what turns a wrong game into a two-minute stall before the menu appears -- a
+-- script resolving fourteen handles at ten seconds each sits there for over two minutes. The first
+-- one still waits properly, because a slow game deserves the benefit of the doubt exactly once.
+local awaitFailed = false
 local awaitToldUser = false
 function Library:Await(parent, name, timeout)
-    local found = parent:WaitForChild(name, timeout or 10)
+    local found = parent:WaitForChild(name, awaitFailed and 1 or (timeout or 10))
     if not found then
+        awaitFailed = true
         Warn("Await: %q never appeared under %s -- the game renamed or removed it. (A wrong game "
             .. "looks the same from here; CONFIG.GAME_IDS refuses that up front instead.)",
             tostring(name), tostring(parent))
@@ -1766,7 +1774,13 @@ local function BindPill(parent, props, action, saveId, canHold)
 end
 
 --------------------------------------------------------------------------- on-screen action button
-local ActionSlots, ActionsLocked = {}, false
+-- ActionsShown is OFF by default: a phone screen is small, and a hub with a dozen keybound toggles
+-- would bury the game under a column of buttons before the user has asked for any of them. The
+-- Settings switch turns them on, and every button already built appears or disappears with it.
+local ActionSlots, ActionsLocked, ActionsShown = {}, false, false
+-- Every live button, so the Settings toggle can reach the ones already built. Strong and pruned on
+-- Destroying, for the reason every other Instance registry here is.
+local ActionButtons = {}
 --!mv:omit
 local function ActionButton(text, onFire, stateful)
     local gui = UI.Gui
@@ -1775,8 +1789,13 @@ local function ActionButton(text, onFire, stateful)
     while ActionSlots[slot] do slot += 1 end
     ActionSlots[slot] = true
     local holder = Create("Frame", gui, { Size = UDim2.fromOffset(0, 38), AutomaticSize = Enum.AutomaticSize.X,
-        Position = UDim2.new(0, 18, 0.34, (slot - 1) * 48), BackgroundTransparency = 1, ZIndex = 150 })
-    holder.Destroying:Connect(function() ActionSlots[slot] = nil end)
+        Position = UDim2.new(0, 18, 0.34, (slot - 1) * 48), BackgroundTransparency = 1, ZIndex = 150,
+        Visible = ActionsShown })
+    ActionButtons[holder] = true
+    holder.Destroying:Connect(function()
+        ActionSlots[slot] = nil
+        ActionButtons[holder] = nil
+    end)
     local face = Create("TextButton", holder, { Text = text, RichText = false, Size = UDim2.new(0, 0, 1, 0),
         AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = Theme.Section, BackgroundTransparency = 0.08,
         TextColor3 = stateful and Theme.SubText or Theme.Text, Font = Enum.Font.GothamBold, TextSize = 14, ZIndex = 150 })
@@ -1806,12 +1825,27 @@ local function ActionButton(text, onFire, stateful)
         if IsPress(input.UserInputType) and not moved then onFire() end
     end)
     -- ⚠ A LOCAL THAT IS THEN RETURNED, never `function holder.SetOn()`. Same MoonVeil rule the
+    -- ⚠ THE FILL CARRIES THE STATE, not the border. A tinted 1px outline is invisible on a phone
+    -- held at arm's length, which is the one place these buttons exist -- so ON is a solid accent
+    -- pill with white text and OFF is the same grey as every other chrome surface. Hover still
+    -- drives BackgroundTransparency, which composes with this rather than fighting it.
     local function SetOn(on)
-        face.TextColor3 = on and Theme.Text or Theme.SubText
+        face.BackgroundColor3 = on and Theme.Accent or Theme.Section
+        face.TextColor3 = on and COLOR_WHITE or Theme.SubText
         faceStroke.Color = on and Theme.Active or Theme.Stroke
-        faceStroke.Transparency = on and 0.25 or 0.5
+        faceStroke.Transparency = on and 0.15 or 0.5
     end
     return holder, stateful and SetOn or nil
+end
+
+-- Settings drives every button at once, including ones built before it was flipped. Keeping them
+-- BUILT and merely hidden is deliberate: a keybind row's state stays whatever the user set, so
+-- switching the buttons back on restores exactly what was there rather than rebuilding from off.
+local function ShowActionButtons(on)
+    ActionsShown = not not on
+    for holder in ActionButtons do
+        if holder.Parent then holder.Visible = ActionsShown end
+    end
 end
 
 --------------------------------------------------------------------------- static widgets
@@ -3294,6 +3328,7 @@ Root.Add(function()
     table.clear(Private.Flags)
     table.clear(PremiumHooks)
     table.clear(ActionSlots)
+    table.clear(ActionButtons)
 end)
 
 Library.Config = CONFIG          -- live config table; write through Configure
@@ -3346,6 +3381,11 @@ function Library:RegisterBuiltins()
             tab:AddToggle({ Name = "Floating Button", Description = "A badge that reopens the menu. Drag to move it.",
                 Flag = "launcher_button", Default = false, Callback = function(v) windowObj.SetLauncher(v) end })
         else
+            -- OFF by default. A phone screen is small and a hub with a dozen keybound toggles
+            -- would bury the game under a column of buttons nobody asked for. Whoever wants them
+            -- turns them on once and the setting is saved.
+            tab:AddToggle({ Name = "On-Screen Buttons", Description = "Tap-to-fire buttons for anything with a keybind.",
+                Flag = "show_action_buttons", Default = false, Callback = ShowActionButtons })
             tab:AddToggle({ Name = "Lock On-Screen Buttons", Description = "Stops them moving when you drag. They still fire when tapped.",
                 Flag = "lock_action_buttons", Default = false, Callback = function(v) ActionsLocked = v end })
         end
