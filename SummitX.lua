@@ -230,11 +230,19 @@ local function Scope()
                 if #tasks == 0 then return end
                 local list = tasks
                 tasks = {}
+                -- ⚠ EVERY TASK IS CAUGHT. Cleanup is the one pass that has to finish: a teardown
+                -- that throws halfway used to abandon every task behind it, so the window, the
+                -- toast layer and a pile of connections were left behind and the next injection
+                -- had to sweep them. A game script's teardown reads game modules -- exactly what
+                -- is nil in a game that patched them out -- so this is not hypothetical.
                 for i = #list, 1, -1 do
                     local item = list[i]
-                    if typeof(item) == "RBXScriptConnection" then item:Disconnect()
-                    elseif typeof(item) == "Instance" then item:Destroy()
-                    elseif type(item) == "function" then item() end
+                    local ok, err
+                    if typeof(item) == "RBXScriptConnection" then ok, err = pcall(item.Disconnect, item)
+                    elseif typeof(item) == "Instance" then ok, err = pcall(item.Destroy, item)
+                    elseif type(item) == "function" then ok, err = pcall(item)
+                    else ok = true end
+                    if not ok then Warn("a cleanup task errored (the rest still ran): %s", tostring(err)) end
                 end
             end
         end,
@@ -1078,6 +1086,7 @@ end
 --   2. Once one lookup has failed, the rest do not wait at all. This is not the game the script
 --      was built for; every remaining lookup will fail too, and waiting proves nothing.
 local awaitFailed = false
+local awaitSeen = {}
 local awaitToldUser = false
 --!mv:omit
 local function LookUp(parent, name, timeout)
@@ -1099,10 +1108,22 @@ end
 function Library:Await(parent, name, timeout)
     local found = LookUp(parent, name, timeout or 10)
     if not found then
+        -- ⚠ ONE LINE PER MISSING THING, not one per lookup. A script resolving fourteen handles
+        -- down three-segment paths asks for the same missing folder over and over -- seventeen
+        -- identical lines of a two-line message, which buries the actual errors underneath it.
+        -- The full explanation goes on the first; after that the name is all that is new.
+        local key = tostring(parent) .. "." .. tostring(name)
+        if not awaitSeen[key] then
+            awaitSeen[key] = true
+            if awaitFailed then
+                Warn("Await: %q never appeared under %s", tostring(name), tostring(parent))
+            else
+                Warn("Await: %q never appeared under %s -- the game renamed or removed it. (A wrong "
+                    .. "game looks the same from here; CONFIG.GAME_IDS refuses that up front instead.)",
+                    tostring(name), tostring(parent))
+            end
+        end
         awaitFailed = true
-        Warn("Await: %q never appeared under %s -- the game renamed or removed it. (A wrong game "
-            .. "looks the same from here; CONFIG.GAME_IDS refuses that up front instead.)",
-            tostring(name), tostring(parent))
         -- ⚠ SILENT IN THE WRONG GAME. A game script resolves its handles BEFORE it calls Init, so
         -- this fires first and Init's "Wrong game" lands on top of it -- two cards, the first of
         -- them blaming the game for a patch and sending the user to report it. GAME_IDS already
