@@ -1065,22 +1065,39 @@ end
 -- The player is told what to DO; the name of the thing that went missing goes to the console, for
 -- whoever is debugging the hub. It means nothing to them and reads as a crash.
 --
--- ONE message. WaitForChild has already sat through the whole timeout by the time this runs, so a
--- game that was merely still loading has almost always finished; what is left over is that the
--- game changed. That is the player's cue to report it, not to keep retrying.
+-- ONE message per session, however many lookups fail: a script resolving fourteen handles would
+-- otherwise stack fourteen identical cards. The console still gets every one.
 --
--- One toast per session, however many lookups fail. A script that awaits eight things would
--- otherwise stack eight identical cards; the console still gets every one.
+-- ⚠ TWO THINGS KEEP THIS FAST, and both matter -- a plain WaitForChild(name, 10) per handle is how
+-- a wrong game turns into a minute of nothing on screen before anything says why.
 --
--- ⚠ AND ONE FULL WAIT PER SESSION. Once a lookup has timed out, this is not the game the script
--- was built for, and every remaining lookup is going to time out too. Paying the full timeout for
--- each of them is what turns a wrong game into a two-minute stall before the menu appears -- a
--- script resolving fourteen handles at ten seconds each sits there for over two minutes. The first
--- one still waits properly, because a slow game deserves the benefit of the doubt exactly once.
+--   1. It gives up 1.5s after the DataModel reports loaded. A game that has finished loading and
+--      still does not have the object is not going to grow one, so the rest of the timeout is
+--      dead time. The full timeout is still there for a game that has NOT finished loading, which
+--      is the only case it was ever for.
+--   2. Once one lookup has failed, the rest do not wait at all. This is not the game the script
+--      was built for; every remaining lookup will fail too, and waiting proves nothing.
 local awaitFailed = false
 local awaitToldUser = false
+--!mv:omit
+local function LookUp(parent, name, timeout)
+    local found = parent:FindFirstChild(name)
+    if found or awaitFailed then return found end
+    local deadline, settled = os.clock() + timeout, nil
+    while os.clock() < deadline do
+        task.wait(0.1)
+        found = parent:FindFirstChild(name)
+        if found then return found end
+        if game:IsLoaded() then
+            settled = settled or os.clock()
+            if os.clock() - settled > 1.5 then return nil end
+        end
+    end
+    return nil
+end
+
 function Library:Await(parent, name, timeout)
-    local found = parent:WaitForChild(name, awaitFailed and 1 or (timeout or 10))
+    local found = LookUp(parent, name, timeout or 10)
     if not found then
         awaitFailed = true
         Warn("Await: %q never appeared under %s -- the game renamed or removed it. (A wrong game "
@@ -3384,10 +3401,12 @@ function Library:RegisterBuiltins()
             -- OFF by default. A phone screen is small and a hub with a dozen keybound toggles
             -- would bury the game under a column of buttons nobody asked for. Whoever wants them
             -- turns them on once and the setting is saved.
-            tab:AddToggle({ Name = "On-Screen Buttons", Description = "Tap-to-fire buttons for anything with a keybind.",
-                Flag = "show_action_buttons", Default = false, Callback = ShowActionButtons })
-            tab:AddToggle({ Name = "Lock On-Screen Buttons", Description = "Stops them moving when you drag. They still fire when tapped.",
-                Flag = "lock_action_buttons", Default = false, Callback = function(v) ActionsLocked = v end })
+            tab:AddToggle({ Name = "On-Screen Buttons", Flag = "show_action_buttons", Default = false,
+                Description = "Puts a button on screen for each feature that has a keybind, so you can switch it on and off without opening the menu.",
+                Callback = ShowActionButtons })
+            tab:AddToggle({ Name = "Lock On-Screen Buttons", Flag = "lock_action_buttons", Default = false,
+                Description = "Stops you dragging those buttons out of place by accident. Tapping them still works.",
+                Callback = function(v) ActionsLocked = v end })
         end
         tab:AddToggle({ Name = "Show Profile", Description = "Your avatar and username in the sidebar", Default = true, Callback = function(state)
             windowObj.Profile.Visible = state
