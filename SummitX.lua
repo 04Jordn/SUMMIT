@@ -1230,6 +1230,9 @@ end)
 --  9. Loops
 --=====================================================================================
 
+-- Consecutive errors before a loop is retired. Small on purpose: a loop that cannot run is
+-- almost always missing something the game took away, and that is not coming back this session.
+local LOOP_FAIL_LIMIT = 5
 local LoopSignals = { RenderStepped = RunService.RenderStepped, Heartbeat = RunService.Heartbeat, Stepped = RunService.Stepped }
 local LoopConnections = {}
 --!mv:omit
@@ -1248,7 +1251,31 @@ local function DispatchLoops(loops, ...)
             if run and interval then
                 if now - loop.Last < interval then run = false else loop.Last = now end
             end
-            if run then loop.Func(...) end
+            -- ⚠ CAUGHT, and it has to be. This used to call Func flat, on the principle that an
+            -- error should surface rather than be swallowed. Two things make that wrong here:
+            --
+            --   * a throw ended the whole PASS, so every loop registered after the broken one
+            --     silently stopped ticking -- one bad feature took out every feature behind it
+            --   * a loop that cannot run does not throw once, it throws SIXTY TIMES A SECOND, and
+            --     the console is unreadable within a second
+            --
+            -- The error still surfaces, once, with its message. A loop that fails this many times
+            -- running is not going to recover -- a module the game removed is gone for the
+            -- session -- so it is retired rather than left to spin.
+            if run then
+                local ok, err = pcall(loop.Func, ...)
+                if ok then
+                    loop.Fails = nil
+                else
+                    loop.Fails = (loop.Fails or 0) + 1
+                    if loop.Fails == 1 then
+                        Warn("a loop errored: %s", tostring(err))
+                    elseif loop.Fails >= LOOP_FAIL_LIMIT then
+                        loop.Removed = true
+                        Warn("loop retired after %d errors in a row: %s", LOOP_FAIL_LIMIT, tostring(err))
+                    end
+                end
+            end
         end
     end
     if dead then
