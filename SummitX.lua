@@ -1064,12 +1064,26 @@ end
 
 -- The player is told what to DO; the name of the thing that went missing goes to the console, for
 -- whoever is debugging the hub. It means nothing to them and reads as a crash.
+--
+-- ONE message. WaitForChild has already sat through the whole timeout by the time this runs, so a
+-- game that was merely still loading has almost always finished; what is left over is that the
+-- game changed. That is the player's cue to report it, not to keep retrying.
+--
+-- One toast per session, however many lookups fail. A script that awaits eight things would
+-- otherwise stack eight identical cards; the console still gets every one.
+local awaitToldUser = false
 function Library:Await(parent, name, timeout)
     local found = parent:WaitForChild(name, timeout or 10)
     if not found then
-        Warn("Await: %q never appeared under %s", tostring(name), tostring(parent))
-        self:Notify({ Title = "Couldn't start", Duration = 8,
-            Content = "The game hadn't finished loading. Rejoin, wait for it to load, then run the script again." })
+        Warn("Await: %q never appeared under %s -- the game renamed or removed it. (A wrong game "
+            .. "looks the same from here; CONFIG.GAME_IDS refuses that up front instead.)",
+            tostring(name), tostring(parent))
+        if not awaitToldUser then
+            awaitToldUser = true
+            self:Notify({ Title = "The game changed something", Duration = 10,
+                Content = "An update moved something this script uses, so parts of it won't work "
+                    .. "until it's patched. Let the owner know in the Discord." })
+        end
     end
     return found
 end
