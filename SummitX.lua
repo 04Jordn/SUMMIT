@@ -3355,6 +3355,34 @@ Library.HttpRequest = HttpRequest
 Library.IsMobile, Library.IsConsole = IsMobile, IsConsole
 Library.Root = Root              -- .Add(conn | instance | fn) — torn down on re-inject
 
+-- A STAND-IN FOR A GAME MODULE THAT IS NOT THERE:
+--
+--     local Combat = Library:Await(Modules, "Combat") or Library.Missing
+--
+-- A game script reads its modules at LOAD time -- `Combat.Config.MaxRange`, `Svc.service("x")` --
+-- hundreds of lines before the first RegisterTab. One nil there throws, and the hub comes up with
+-- Settings and nothing else, because no tab was ever registered. Hand those reads this instead and
+-- nothing throws: every tab registers, and the features that needed the missing module simply do
+-- nothing when pressed. Await has already told the user the game changed.
+--
+-- Absorbs whatever is done to it -- index, call, arithmetic, length -- and yields itself, or 0.
+-- That is the point: no read anywhere downstream has to be guarded.
+--
+-- ⚠ IT DOES NOT PRETEND TO BE A FUNCTION. debug.getupvalue, debug.getconstants and hookfunction
+-- all want a real Lua function and will throw on it, so guard those with a type check. Making it
+-- lie about its type would only move the failure somewhere harder to find.
+--
+-- ⚠ AND IT IS TRUTHY. `if Combat then` passes, so a script cannot use that to detect a miss --
+-- compare against Library.Missing when it needs to know.
+Library.Missing = setmetatable({}, {
+    __index = function(t) return t end,
+    __call = function(t) return t end,
+    __len = function() return 0 end,
+    __tostring = function() return "<missing module>" end,
+    __add = function() return 0 end, __sub = function() return 0 end,
+    __mul = function() return 0 end, __div = function() return 0 end,
+})
+
 function Library:Configure(opts)
     for k, v in opts do
         if type(v) == "table" and type(CONFIG[k]) == "table" and v[1] == nil and CONFIG[k][1] == nil then
