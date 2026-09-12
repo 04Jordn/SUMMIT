@@ -1080,9 +1080,8 @@ function Library:Await(parent, name, timeout)
             tostring(name), tostring(parent))
         if not awaitToldUser then
             awaitToldUser = true
-            self:Notify({ Title = "The game changed something", Duration = 10,
-                Content = "An update moved something this script uses, so parts of it won't work "
-                    .. "until it's patched. Let the owner know in the Discord." })
+            self:Notify({ Title = "The game patched something", Duration = 8,
+                Content = "It changed something this script uses — let the owner know in the Discord." })
         end
     end
     return found
