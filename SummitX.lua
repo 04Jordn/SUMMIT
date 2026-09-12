@@ -1103,7 +1103,11 @@ function Library:Await(parent, name, timeout)
         Warn("Await: %q never appeared under %s -- the game renamed or removed it. (A wrong game "
             .. "looks the same from here; CONFIG.GAME_IDS refuses that up front instead.)",
             tostring(name), tostring(parent))
-        if not awaitToldUser then
+        -- ⚠ SILENT IN THE WRONG GAME. A game script resolves its handles BEFORE it calls Init, so
+        -- this fires first and Init's "Wrong game" lands on top of it -- two cards, the first of
+        -- them blaming the game for a patch and sending the user to report it. GAME_IDS already
+        -- says this is not the game; there is nothing here the player needs to hear about.
+        if not awaitToldUser and self:IsSupportedGame() then
             awaitToldUser = true
             self:Notify({ Title = "The game patched something", Duration = 8,
                 Content = "It changed something this script uses — let the owner know in the Discord." })
