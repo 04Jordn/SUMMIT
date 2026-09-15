@@ -56,7 +56,7 @@ local CONFIG = {
     STORE = "",                     -- e.g. "https://summitx.mysellauth.com"
 
     FOLDER = "SummitX",
-    CONFIG_FILE = "SummitX/configs/" .. tostring(game.PlaceId) .. ".json",
+    CONFIG_FILE = "SummitX/configs/" .. tostring(game.GameId) .. ".json",
 
     API = "https://vk57znx9vk.apps.bot-hosting.cloud",
     API_ATTEMPTS = 2,
@@ -968,8 +968,8 @@ do
         end
         self.Palette = chosen.Name
 
-        local h = Private.Flags.ui_palette
-        if h then h.Set(chosen.Name) end
+        Private.SaveTheme(chosen.Name)
+        if Private.ThemeRow then Private.ThemeRow.Set(chosen.Name) end
         return true
     end
 end
@@ -1482,15 +1482,39 @@ end
 -- The file, read once. Kept off SavedConfig until LoadConfig publishes it: RegisterFlag restores a
 -- widget the moment SavedConfig holds a value for it, and the game scripts are written against
 -- LoadConfig's ordering.
+-- The theme belongs to the person, not to the game, so it sits in one file beside the per-game
+-- configs and every hub in every game reads the same one. It is one word, so it is not JSON.
+function Private.ThemePath()
+    return (CONFIG.FOLDER ~= "" and CONFIG.FOLDER or "SummitX") .. "/theme.txt"
+end
+
+function Private.SaveTheme(name)
+    if canFile then pcall(writefile, Private.ThemePath(), name) end
+end
+
+function Private.ReadTheme()
+    local path = Private.ThemePath()
+    if not (canFile and isfile(path)) then return nil end
+    local ok, name = pcall(readfile, path)
+    return ok and name and (name:gsub("%s", "")) or nil
+end
+
 function Private.ReadConfig()
     if Private.ConfigFile == nil then
         local data
-        if canFile and isfile(CONFIG.CONFIG_FILE) then
-            local ok, decoded = pcall(function() return HttpService:JSONDecode(readfile(CONFIG.CONFIG_FILE)) end)
+        -- Configs used to be keyed per place, so a hub that has run here before still has one under
+        -- the old name. Read it if the new one is not there yet; the next save writes the new name.
+        local path = CONFIG.CONFIG_FILE
+        if canFile and not isfile(path) then
+            local old = (CONFIG.FOLDER or "SummitX") .. "/configs/" .. tostring(game.PlaceId) .. ".json"
+            if isfile(old) then path = old end
+        end
+        if canFile and isfile(path) then
+            local ok, decoded = pcall(function() return HttpService:JSONDecode(readfile(path)) end)
             data = ok and type(decoded) == "table" and decoded or nil
             if not data then
                 Warn("config at %q is unreadable — every saved setting is lost, and the next save "
-                    .. "replaces it: %s", CONFIG.CONFIG_FILE, tostring(decoded))
+                    .. "replaces it: %s", path, tostring(decoded))
             end
         end
         Private.ConfigFile = data or false
@@ -1524,6 +1548,7 @@ function Library:ResetSettings()
         end
     end
     loading = false
+    self:SetTheme(self.Palettes[1])
     SavedConfig = nil
     configDirty = false
     if canFile and isfile(CONFIG.CONFIG_FILE) then
@@ -3405,8 +3430,8 @@ function Library:Authorise()
     end
     Seal(CONFIG)
 
-    local saved = Private.ReadConfig()
-    if saved and saved.ui_palette then self:SetTheme(saved.ui_palette) end
+    local theme = Private.ReadTheme()
+    if theme then self:SetTheme(theme) end
 
     self:LogExecution()
     if not self:Allowed() then return Restore(false) end
@@ -3595,7 +3620,7 @@ function Library:Configure(opts)
         end
     end
     if opts.FOLDER and not opts.CONFIG_FILE then
-        CONFIG.CONFIG_FILE = CONFIG.FOLDER .. "/configs/" .. tostring(game.PlaceId) .. ".json"
+        CONFIG.CONFIG_FILE = CONFIG.FOLDER .. "/configs/" .. tostring(game.GameId) .. ".json"
     end
     if CONFIG.FORCE_MOBILE ~= nil then
         IsMobile = not not CONFIG.FORCE_MOBILE
@@ -3627,8 +3652,8 @@ function Library:RegisterBuiltins()
                     windowObj.SetMenuOpen(not windowObj.IsOpen())
                 end})
         end
-        tab:AddDropdown({ Name = "Theme", Description = "The color the whole menu is built around. Changes as soon as you pick one.",
-            Flag = "ui_palette", Options = Library.Palettes, Default = Library.Palette,
+        Private.ThemeRow = tab:AddDropdown({ Name = "Theme", Description = "The color the whole menu is built around. Changes as soon as you pick one.",
+            Flag = false, Options = Library.Palettes, Default = Library.Palette,
             Callback = function(name) Library:SetTheme(name) end })
         tab:AddSlider({ Name = "Menu Size", Description = "1.00 is normal.", Flag = "ui_scale_rel",
             Min = 0.7, Max = 1.4, Default = DEFAULT_SCALE, Decimals = 2, Callback = function(val) windowObj.SetScale(val) end})
