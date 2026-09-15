@@ -1577,6 +1577,18 @@ function Library:LoadConfig()
     loading = false
 end
 
+-- ⚠ THE PALETTE HAS TO LAND BEFORE THE FIRST INSTANCE IS BUILT. LoadConfig runs after the window,
+-- which is right for widget values -- they need their widgets -- but a palette restored there
+-- builds the whole hub in the default colours and repaints it a frame later, which reads as a
+-- flash of the wrong theme. So the file is read once more, early, for this one key. Deliberately
+-- NOT cached into SavedConfig: that would start RegisterFlag restoring widgets as they register,
+-- and every game script is written against LoadConfig's ordering.
+function Library:PreloadTheme()
+    if not (canFile and isfile(CONFIG.CONFIG_FILE)) then return end
+    local ok, data = pcall(function() return HttpService:JSONDecode(readfile(CONFIG.CONFIG_FILE)) end)
+    if ok and type(data) == "table" and data.ui_palette then self:SetTheme(data.ui_palette) end
+end
+
 -- Puts every widget back to the value it was built with and throws the saved file away. Tabs that
 -- have not been opened yet have no widgets to set, so the file goes too: nothing is left to restore
 -- them from when they are built later.
@@ -2767,7 +2779,7 @@ function Library:CreateWindow(titleText)
     local baseW, baseH = IsMobile and 560 or 880, IsMobile and 330 or 520
     local SIDEBAR_W = IsMobile and 150 or 170
 
-    local root = Create("Frame", nil, { Size = UDim2.new(0, baseW, 0, baseH), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0), BackgroundTransparency = 1, Active = true, ZIndex = 1 })
+    local root = Create("Frame", nil, { Size = UDim2.new(0, baseW, 0, baseH), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0), BackgroundTransparency = 1, Active = true, Visible = false, ZIndex = 1 })
     local uiScale = Create("UIScale", root, {Scale = DEFAULT_SCALE * SCALE_BASE})
     local shadow = Shadow(root, 120, 0.62, 0)
     local main = Create("Frame", root, { Size = UDim2.fromScale(1, 1),
@@ -2956,12 +2968,16 @@ function Library:CreateWindow(titleText)
     MakeDraggable(sidebar, root, NoteDrag, DragGhost)
     PrimeFade(root, skipGhost, { [root] = true, [shadow] = true, [main] = true, [mainStroke] = true })
 
+    -- ⚠ A VIEWPORT UNDER 64px IS NOT A VIEWPORT, it is the engine still starting up, and the clamp
+    -- below would read it as "the screen is one pixel wide" and slam the window into the top-left
+    -- corner. That is the flash on execute: a moment later the real size arrives, WatchViewport
+    -- sees it change and refits, and the window jumps back to the middle.
     --!mv:omit
     function RefitWindow()
         if not root.Parent then return end
         local vp, sc = gui.AbsoluteSize, math.max(uiScale.Scale, 0.01)
-        if vp.X < 1 or vp.Y < 1 then vp = Camera and Camera.ViewportSize or vp end
-        if vp.X < 1 or vp.Y < 1 then return end
+        if vp.X < 64 or vp.Y < 64 then vp = Camera and Camera.ViewportSize or vp end
+        if vp.X < 64 or vp.Y < 64 then return end
         CloseActivePopup()
         if maximized then
             CancelMotors(root)
@@ -3214,10 +3230,21 @@ function Library:CreateWindow(titleText)
     function WindowObj:Notify(cfg) return Library:Notify(cfg) end
     function WindowObj:OnToggle(fn) if type(fn) == "function" then ToggleHooks[#ToggleHooks + 1] = fn end end
 
+    -- ⚠ BUILT HIDDEN, SHOWN ONCE IT HAS BEEN LAID OUT. A ScreenGui mounted this instant still
+    -- reports a zero AbsoluteSize, so the root's scale position resolves to the top-left corner
+    -- and the whole hub renders up there, unsized, for a frame before the refit drags it back.
+    -- Four frames is the ceiling, not the wait: it breaks out as soon as the viewport is real.
     task.defer(function()
         if root.Parent or not gui.Parent then return end
         root.Parent = gui
         QueueRefit()
+        for _ = 1, 4 do
+            if gui.AbsoluteSize.X >= 64 and root.AbsoluteSize.X > 0 then break end
+            RunService.Heartbeat:Wait()
+        end
+        if not (root.Parent and gui.Parent) then return end
+        RefitWindow()
+        root.Visible = true
     end)
 
     SetCursor(true)
@@ -3572,6 +3599,7 @@ function Library:Init()
     Camera = Workspace.CurrentCamera or Camera
 
     if genv.SummitGen ~= Private.Gen then return end
+    self:PreloadTheme()
     self:BuildTabs(self:CreateWindow(CONFIG.HUB_NAME))
     self:LoadConfig()
     Root.Add(function() if configDirty then Library:SaveConfig() end end)
