@@ -19,8 +19,8 @@
 --  ⚠ AT LUAU'S 200-LOCALS-PER-FUNCTION CAP. New top-level names go on an existing table or inside
 --    a `do ... end`, or the whole file silently fails to compile.
 --
---  ⚠ MOONVEIL. `--!mv:omit` marks per-frame work only. Never write `function tbl.field()` inside
---    an omitted function -- the field comes out nil; use `local function Name()` then assign.
+--  ⚠ MOONVEIL. The omit directive marks per-frame work only. Never write `function tbl.field()`
+--    inside an omitted function -- the field comes out nil; use `local function Name()` then assign.
 --=====================================================================================
 
 local genv = type(getgenv) == "function" and getgenv() or nil
@@ -978,9 +978,7 @@ end
 --  6. Input & drag
 --=====================================================================================
 
---!mv:inline
 local function IsPress(t) return t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch end
---!mv:inline
 local function IsMove(t) return t == Enum.UserInputType.MouseMovement or t == Enum.UserInputType.Touch end
 
 --!mv:omit
@@ -1754,7 +1752,6 @@ local KEY_SHORT = {
     Backspace = "Bksp", CapsLock = "Caps", PageUp = "PgUp", PageDown = "PgDn", Delete = "Del",
     Insert = "Ins", Escape = "Esc", Return = "Enter", KeypadEnter = "NumEnter", PrintScreen = "PrtSc",
 }
---!mv:inline
 local function KeyLabel(k) return KEY_SHORT[k] or k end
 
 --!mv:omit
@@ -1799,7 +1796,6 @@ local function FlagFor(ctx, props)
     return props.Flag or (ctx.TabName .. "::" .. tostring(props.Name))
 end
 
---!mv:inline
 local function Locked(props) return props.Premium and not Library.IsPremium end
 
 local function RowHit(frame)
@@ -3070,7 +3066,6 @@ function Library:CreateWindow(titleText)
     end
     Root.Add(function() if warmConn then warmConn:Disconnect(); warmConn = nil end end)
 
-    --!mv:cff
     function WindowObj:MakeTab(name, subtitle, icon, body)
         local isActiveTab = self.FirstTab
         self.FirstTab = false
@@ -3243,7 +3238,6 @@ local function ShowKeyGate(K, CheckKey, onPass)
         end
     end
 
-    --!mv:cff
     local function Submit()
         if granted or busy then return end
         if genv.SummitGen ~= Private.Gen then kgui:Destroy(); return end
@@ -3308,7 +3302,6 @@ end
 function Library:LogExecution()
     if not HttpRequest or ApiBase() == "" then return end
     task.spawn(function()
-        --!mv:vm
         local function First(...)
             for i = 1, select("#", ...) do
                 local fn = select(i, ...)
@@ -3321,7 +3314,6 @@ function Library:LogExecution()
         end
 
         local sent = false
-        --!mv:cff
         local function Send(gameName)
             if sent then return end
             sent = true
@@ -3415,7 +3407,6 @@ function Library:Authorise()
         return result
     end
 
-    --!mv:vm
     local function Seal(t)
         for _, v in t do
             if type(v) == "table" and not table.isfrozen(v) then Seal(v) end
@@ -3438,11 +3429,9 @@ function Library:Authorise()
         return Restore(true)
     end
 
-    --!mv:vm
     local function Normalise(s)
         return tostring(s):gsub("%s", ""):gsub("%c", ""):lower()
     end
-    --!mv:vm
     local function MatchesLocal(entered)
         for _, k in ipairs(K.Keys or {}) do
             if entered == Normalise(k) then return true end
@@ -3450,7 +3439,6 @@ function Library:Authorise()
         return false
     end
 
-    --!mv:cff
     local function CheckKey(typed)
         local entered = Normalise(typed)
         if entered == "" then return false end
