@@ -1206,13 +1206,14 @@ function Library:Notify(cfg)
     return entry
 end
 
+-- One failed lookup means the rest will fail too, so the first one is the only one worth waiting
+-- for, logging, or raising a card about. In a game the script was not built for, nothing was ever
+-- going to resolve and Allowed() has already put the real reason on screen.
 local awaitFailed = false
-local awaitSeen = {}
-local awaitToldUser = false
 --!mv:cff
 local function LookUp(parent, name, timeout)
     local found = parent:FindFirstChild(name)
-    if found or awaitFailed then return found end
+    if found or awaitFailed or not Library:Allowed() then return found end
     local deadline, settled = os.clock() + timeout, nil
     while os.clock() < deadline do
         task.wait(0.1)
@@ -1229,26 +1230,15 @@ end
 --!mv:cff
 function Library:Await(parent, name, timeout)
     local found = LookUp(parent, name, timeout or 10)
-    if not found then
-        local key = tostring(parent) .. "." .. tostring(name)
-        if not awaitSeen[key] then
-            awaitSeen[key] = true
-            if awaitFailed then
-                Warn("Await: %q never appeared under %s", tostring(name), tostring(parent))
-            else
-                Warn("Await: %q never appeared under %s -- the game renamed or removed it. (A wrong "
-                    .. "game looks the same from here; CONFIG.GAME_IDS refuses that up front instead.)",
-                    tostring(name), tostring(parent))
-            end
-        end
-        awaitFailed = true
-        if not awaitToldUser and self:IsSupportedGame() then
-            awaitToldUser = true
-            self:Notify({ Title = "The game patched something", Duration = 8,
-                Content = "It changed something this script uses — let the owner know in the Discord." })
-        end
+    if found or awaitFailed then return found end
+    awaitFailed = true
+    if self:Allowed() then
+        Warn("Await: %q never appeared under %s. Nothing after this will resolve either.",
+            tostring(name), tostring(parent))
+        self:Notify({ Title = "The game patched something", Duration = 8,
+            Content = "It changed something this script uses — let the owner know in the Discord." })
     end
-    return found
+    return nil
 end
 
 local function Spawn(fn, ...)
@@ -1489,15 +1479,29 @@ local function MarkDirty(flag)
         end
     end)
 end
+-- The file, read once. Kept off SavedConfig until LoadConfig publishes it: RegisterFlag restores a
+-- widget the moment SavedConfig holds a value for it, and the game scripts are written against
+-- LoadConfig's ordering.
+function Private.ReadConfig()
+    if Private.ConfigFile == nil then
+        local data
+        if canFile and isfile(CONFIG.CONFIG_FILE) then
+            local ok, decoded = pcall(function() return HttpService:JSONDecode(readfile(CONFIG.CONFIG_FILE)) end)
+            data = ok and type(decoded) == "table" and decoded or nil
+            if not data then
+                Warn("config at %q is unreadable — every saved setting is lost, and the next save "
+                    .. "replaces it: %s", CONFIG.CONFIG_FILE, tostring(decoded))
+            end
+        end
+        Private.ConfigFile = data or false
+    end
+    return Private.ConfigFile or nil
+end
+
 --!mv:cff
 function Library:LoadConfig()
-    if not (canFile and isfile(CONFIG.CONFIG_FILE)) then return end
-    local ok, data = pcall(function() return HttpService:JSONDecode(readfile(CONFIG.CONFIG_FILE)) end)
-    if not ok or type(data) ~= "table" then
-        Warn("config at %q is unreadable — every saved setting is lost, and the next save replaces it: %s",
-            CONFIG.CONFIG_FILE, tostring(data))
-        return
-    end
+    local data = Private.ReadConfig()
+    if not data then return end
     SavedConfig = data
     loading = true
     task.defer(EndLoading)
@@ -1506,15 +1510,6 @@ function Library:LoadConfig()
         if h then h.Set(v) end
     end
     loading = false
-end
-
---!mv:cff
-function Library:PreloadTheme()
-    if self.ThemeLoaded then return end
-    self.ThemeLoaded = true
-    if not (canFile and isfile(CONFIG.CONFIG_FILE)) then return end
-    local ok, data = pcall(function() return HttpService:JSONDecode(readfile(CONFIG.CONFIG_FILE)) end)
-    if ok and type(data) == "table" and data.ui_palette then self:SetTheme(data.ui_palette) end
 end
 
 --!mv:cff
@@ -3337,30 +3332,6 @@ function Library:LogExecution()
 end
 
 --!mv:vm
-function Library:RejectUnsupported()
-    local list = CONFIG.UNSUPPORTED
-    if type(list) ~= "table" or #list == 0 then return false end
-
-    local name = self:ExecutorName()
-    local lowered = name:lower()
-
-    for _, entry in ipairs(list) do
-        if type(entry) == "string" and entry ~= "" and lowered:find(entry:lower(), 1, true) then
-            Library:Notify({
-                Title = "Executor not supported",
-                Content = CONFIG.HUB_NAME .. " doesn't run on " .. name .. "."
-                    .. (CONFIG.UNSUPPORTED_NOTE ~= "" and (" " .. CONFIG.UNSUPPORTED_NOTE) or "")
-                    .. " Closing in a few seconds.",
-                Duration = 8,
-            })
-            task.delay(6, function() if genv.SummitCleanup then genv.SummitCleanup() end end)
-            return true
-        end
-    end
-    return false
-end
-
---!mv:vm
 function Library:IsSupportedGame()
     local ids = CONFIG.GAME_IDS
     if type(ids) ~= "table" or #ids == 0 then return true end
@@ -3370,21 +3341,40 @@ function Library:IsSupportedGame()
     return false
 end
 
+-- May this script run here? Decided once, on the first ask, and the answer kept. A refusal puts up
+-- one card and closes the hub a few seconds later; the generation check stops that timer from
+-- reaching into a copy that replaced this one.
 --!mv:vm
-function Library:RejectWrongGame()
-    if self:IsSupportedGame() then return false end
+function Library:Allowed()
+    if Private.Allowed ~= nil then return Private.Allowed end
+    Private.Allowed = true
 
-    local hub = CONFIG.HUB_NAME ~= "" and CONFIG.HUB_NAME or "This script"
-    local want = CONFIG.GAME_NAME ~= "" and CONFIG.GAME_NAME or "a different game"
-    Library:Notify({
-        Title = "Wrong game",
-        Content = ("%s only works in %s."):format(hub, want)
+    local title, why
+    local name = self:ExecutorName()
+    for _, entry in ipairs(CONFIG.UNSUPPORTED or {}) do
+        if type(entry) == "string" and entry ~= "" and name:lower():find(entry:lower(), 1, true) then
+            title = "Executor not supported"
+            why = ("%s doesn't run on %s."):format(CONFIG.HUB_NAME, name)
+                .. (CONFIG.UNSUPPORTED_NOTE ~= "" and (" " .. CONFIG.UNSUPPORTED_NOTE) or "")
+            break
+        end
+    end
+    if not title and not self:IsSupportedGame() then
+        title = "Wrong game"
+        why = ("%s only works in %s."):format(
+            CONFIG.HUB_NAME ~= "" and CONFIG.HUB_NAME or "This script",
+            CONFIG.GAME_NAME ~= "" and CONFIG.GAME_NAME or "a different game")
             .. (CONFIG.GAME_NOTE ~= "" and (" " .. CONFIG.GAME_NOTE) or "")
-            .. " Closing in a few seconds.",
-        Duration = 8,
-    })
-    task.delay(6, function() if genv.SummitCleanup then genv.SummitCleanup() end end)
-    return true
+    end
+    if not title then return true end
+
+    Private.Allowed = false
+    self:Notify({ Title = title, Content = why .. " Closing in a few seconds.", Duration = 8 })
+    local gen = Private.Gen
+    task.delay(6, function()
+        if genv.SummitGen == gen and genv.SummitCleanup then genv.SummitCleanup() end
+    end)
+    return false
 end
 
 --=====================================================================================
@@ -3415,11 +3405,11 @@ function Library:Authorise()
     end
     Seal(CONFIG)
 
-    self:PreloadTheme()
+    local saved = Private.ReadConfig()
+    if saved and saved.ui_palette then self:SetTheme(saved.ui_palette) end
 
     self:LogExecution()
-    if self:RejectUnsupported() then return Restore(false) end
-    if self:RejectWrongGame() then return Restore(false) end
+    if not self:Allowed() then return Restore(false) end
 
     local K = CONFIG.KEY
     local haveLocalKeys = type(K.Keys) == "table" and #K.Keys > 0
@@ -3492,7 +3482,6 @@ function Library:Init()
     Camera = Workspace.CurrentCamera or Camera
 
     if genv.SummitGen ~= Private.Gen then return end
-    self:PreloadTheme()
     self:BuildTabs(self:CreateWindow(CONFIG.HUB_NAME))
     self:LoadConfig()
     Root.Add(function() if configDirty then Library:SaveConfig() end end)
@@ -3613,6 +3602,10 @@ function Library:Configure(opts)
         self.IsMobile = IsMobile
     end
     EnsureFolders()
+
+    -- Asked here because here is the earliest it can be answered. A script that never calls
+    -- Authorise, or dies on a nil handle before it reaches Init, still gets told why.
+    self:Allowed()
     return self
 end
 
