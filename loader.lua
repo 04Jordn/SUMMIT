@@ -1,22 +1,41 @@
 --=====================================================================================
 --  SUMMITX LOADER
 --
---  Returns the Library, exactly like loading SummitX.lua directly:
+--  One URL, two jobs, chosen by the argument it is called with.
 --
---      local Library = loadstring(game:HttpGet(
---          "https://raw.githubusercontent.com/04Jordn/SUMMIT/refs/heads/main/loader.lua"))()
+--  NO ARGUMENT -- returns the Library, exactly like loading SummitX.lua directly:
 --
---  Knows nothing about any game. It exists so game scripts point at a URL that
---  never moves: rename the library file, restructure the repo, change host, and
---  you edit SOURCE below instead of every script you have ever shipped.
+--      local Library = loadstring(game:HttpGet(LOADER))()
+--
+--  Every game script calls it this way, which is why they can point at a URL that never
+--  moves: rename the library file, restructure the repo, change host, and you edit SOURCE
+--  below instead of every script you have ever shipped. Those scripts ship obfuscated, so
+--  the no-argument call has to keep meaning "give me the Library" -- that is why picking a
+--  game is a separate argument rather than the default.
+--
+--  AN ARGUMENT -- runs the script for the game you are in, picked by GameId:
+--
+--      loadstring(game:HttpGet(LOADER))("auto")
+--
+--  Pass a name instead to force one: ("mafia"), ("cold war"), ("fut"), ("last stop").
+--  A name GAMES does not have is fetched as a repo file of that name, so a script still in
+--  development loads by file name without this file naming it. Shipping one is its GAMES line:
+--  that line is the switch that makes it load by itself for everyone standing in that game.
 --=====================================================================================
 
-local SOURCE = "https://raw.githubusercontent.com/04Jordn/SUMMIT/refs/heads/main/SummitX.lua"
+local BASE   = "https://raw.githubusercontent.com/04Jordn/SUMMIT/refs/heads/main/"
+local SOURCE = BASE .. "SummitX.lua"
 
--- Cache-buster: raw.githubusercontent sends Cache-Control: max-age=300, so without
--- it a fresh upload keeps serving the previous copy for five minutes -- which looks
--- exactly like "my update didn't apply".
-local url = SOURCE .. (SOURCE:find("?") and "&" or "?") .. "_=" .. tostring(os.time())
+-- GameId, never PlaceId: a universe moves players between places -- Mafia rounds run in a
+-- separate round place, FUT hops pitches -- and the match has to survive the teleport. Ids is
+-- a list because one script can cover several universes: FUT's clones are separate universes
+-- running the same build, which is why FUT is the one script with no GAME_IDS guard of its own.
+local GAMES = {
+    { Name = "Cold War",  File = "ColdWarGame",  Ids = { 4750561026 } },
+    { Name = "FUT",       File = "FutGame",      Ids = { 9517627739, 10629189132 } },
+    { Name = "MAFIA",     File = "MafiaGame",    Ids = { 7497471789 } },
+    { Name = "Last Stop", File = "LastStopGame", Ids = { 10759337137 } },
+}
 
 -- Two transports, same reasoning as the library's own HTTP layer: game:HttpGet is
 -- executor-injected, not a Roblox API, so it is not a given. Note the member lookup
@@ -56,16 +75,68 @@ local function Fetch(target)
     return nil, why
 end
 
-local body, why = Fetch(url)
-if not body then
-    warn("[SummitX] download failed: " .. tostring(why))
-    return
+-- Cache-buster: raw.githubusercontent sends Cache-Control: max-age=300, so without it a
+-- fresh upload keeps serving the previous copy for five minutes -- which looks exactly
+-- like "my update didn't apply".
+local function Run(target, name)
+    local url = target .. (target:find("?") and "&" or "?") .. "_=" .. tostring(os.time())
+
+    local body, why = Fetch(url)
+    if not body then
+        warn("[SummitX] download failed for " .. name .. ": " .. tostring(why))
+        return
+    end
+
+    -- raw.githubusercontent answers a missing file with a 200-shaped body on some
+    -- transports, so a rename reads as a compile error unless it is named here.
+    if body:sub(1, 4) == "404:" then
+        warn("[SummitX] not on the repo: " .. name)
+        return
+    end
+
+    local chunk, err = loadstring(body, name)
+    if not chunk then
+        warn("[SummitX] failed to compile " .. name .. ": " .. tostring(err))
+        return
+    end
+
+    return chunk()
 end
 
-local chunk, err = loadstring(body, "SummitX")
-if not chunk then
-    warn("[SummitX] failed to compile: " .. tostring(err))
-    return
+local function Normalise(text)
+    return (tostring(text):lower():gsub("[^%w]", ""))
 end
 
-return chunk()
+local function Pick(want)
+    if want then
+        for _, entry in ipairs(GAMES) do
+            if Normalise(entry.Name) == want or Normalise(entry.File) == want then return entry end
+        end
+        return nil, "no script called '" .. want .. "'"
+    end
+
+    for _, entry in ipairs(GAMES) do
+        for _, id in ipairs(entry.Ids) do
+            if id == game.GameId then return entry end
+        end
+    end
+    return nil, "no script for this game (GameId " .. tostring(game.GameId) .. ")"
+end
+
+local mode = ...
+if mode == nil or mode == false then return Run(SOURCE, "SummitX") end
+
+local raw  = (type(mode) == "string") and mode or ""
+local want = Normalise(raw)
+if want == "auto" or want == "game" or want == "true" or want == "" then want = nil end
+
+local entry, why = Pick(want)
+if entry then return Run(BASE .. entry.File, entry.File) end
+
+-- A name GAMES does not have is still allowed to be a file on the repo. That is how a script
+-- that has not shipped yet loads -- ("FootballFusion3") -- without this public file naming it,
+-- which a GAMES line would, to everyone, along with handing a copy to anyone standing in that
+-- game. Spelled exactly: raw.githubusercontent is case-sensitive, and a plain file name only.
+if want and raw:match("^[%w_%-]+$") then return Run(BASE .. raw, raw) end
+
+warn("[SummitX] " .. why)
