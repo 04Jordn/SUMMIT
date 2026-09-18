@@ -217,24 +217,86 @@ Root.Add(function() SetCursor(false) end)
 --=====================================================================================
 local KeybindRegistry, PendingBind = {}, nil
 local SliderDragging = false
+local V_THRESH, P_THRESH = 0.001, 0.001
+
 local Motors = {}
+local WakeTick
+local SpringCoeffs
+do
+local SPRING_EPS = 0.0001
+local exp, sqrt, cos, sin = math.exp, math.sqrt, math.cos, math.sin
+--!mv:omit
+function SpringCoeffs(freq, damp, dt)
+    local f = freq * 6.283185307179586
+    local decay = exp(-damp * f * dt)
+    if damp == 1 then
+        local fdt = f * dt
+        return (1 + fdt) * decay, dt * decay, -(f * f * dt) * decay, (1 - fdt) * decay
+    end
+    local c = sqrt(1 - damp * damp)
+    local w = f * c
+    local i = cos(w * dt)
+    local y = w > SPRING_EPS and sin(w * dt) / w or dt
+    local z = y * f
+    return (i + damp * z) * decay, y * decay, -(z * f) * decay, (i - z * damp) * decay
+end
+end
+
+local StepMotors
+do
+local SCRATCH = table.create(4)
+local MotorDone = {}
+local MAX_STEP = 0.05
+local abs, spawn, next = math.abs, task.spawn, next
+--!mv:omit
+function StepMotors(dt)
+    if dt > MAX_STEP then dt = MAX_STEP end
+    local fired = 0
+    for obj, props in Motors do
+        for prop, m in props do
+            local settled, c = true, m.c
+            local A, B, C, D = SpringCoeffs(m.f, m.d, dt)
+            for i = 1, m.n do
+                local b = (i - 1) * 3
+                local g = c[b + 3]
+                local offset, v0 = c[b + 1] - g, c[b + 2]
+                local p, v = offset * A + v0 * B + g, offset * C + v0 * D
+                if abs(v) < V_THRESH and abs(p - g) < P_THRESH then
+                    p, v = g, 0
+                else
+                    settled = false
+                end
+                c[b + 1], c[b + 2] = p, v
+                SCRATCH[i] = p
+            end
+            obj[prop] = m.k(SCRATCH)
+            if settled then
+                props[prop] = nil
+                if m.done then fired += 1; MotorDone[fired] = m.done end
+            end
+        end
+        if next(props) == nil then Motors[obj] = nil end
+    end
+    for i = 1, fired do
+        local fn = MotorDone[i]
+        MotorDone[i] = nil
+        spawn(fn)
+    end
+end
+end
+
 --!mv:omit
 local function CancelMotors(obj, prop)
     local reg = Motors[obj]
     if not reg then return nil end
-    if prop == nil then
-        Motors[obj] = nil
-        for _, m in reg do m[1]:Cancel() end
-        return nil
-    end
+    if prop == nil then Motors[obj] = nil; return nil end
     local m = reg[prop]
     if not m then return nil end
     reg[prop] = nil
     if next(reg) == nil then Motors[obj] = nil end
-    m[1]:Cancel()
-    return m[2]
+    return m.g
 end
-Root.Add(function() for obj in Motors do CancelMotors(obj) end end)
+Root.Add(function() table.clear(Motors) end)
 
 local Library = {
     Theme = {
@@ -268,39 +330,81 @@ local Private: { [string]: any } = {
 
 local Tween
 do
-local EASE, BOUNCE, OUT = Enum.EasingStyle.Quint, Enum.EasingStyle.Back, Enum.EasingDirection.Out
-local TWEENABLE = { number = true, Color3 = true, UDim2 = true, UDim = true, Vector2 = true }
+local DEC_GOAL, DEC_CUR = table.create(4), table.create(4)
+local DECOMPOSE
+do
+local clamp, newColor3, newUDim2, newUDim, newVector2 = math.clamp, Color3.new, UDim2.new, UDim.new, Vector2.new
+--!mv:omit
+local function cNumber(c) return c[1] end
+--!mv:omit
+local function cColor3(c) return newColor3(clamp(c[1], 0, 1), clamp(c[2], 0, 1), clamp(c[3], 0, 1)) end
+--!mv:omit
+local function cUDim2(c) return newUDim2(c[1], c[2], c[3], c[4]) end
+--!mv:omit
+local function cUDim(c) return newUDim(c[1], c[2]) end
+--!mv:omit
+local function cVector2(c) return newVector2(c[1], c[2]) end
+--!mv:omit
+local function dNumber(v, into) into[1] = v; return 1, cNumber end
+--!mv:omit
+local function dColor3(v, into) into[1], into[2], into[3] = v.R, v.G, v.B; return 3, cColor3 end
+--!mv:omit
+local function dUDim2(v, into)
+    into[1], into[2], into[3], into[4] = v.X.Scale, v.X.Offset, v.Y.Scale, v.Y.Offset
+    return 4, cUDim2
+end
+--!mv:omit
+local function dUDim(v, into) into[1], into[2] = v.Scale, v.Offset; return 2, cUDim end
+--!mv:omit
+local function dVector2(v, into) into[1], into[2] = v.X, v.Y; return 2, cVector2 end
+DECOMPOSE = { number = dNumber, Color3 = dColor3, UDim2 = dUDim2, UDim = dUDim, Vector2 = dVector2 }
+end
+--!mv:omit
+local function Decompose(v, into)
+    local fn = DECOMPOSE[typeof(v)]
+    if not fn then return nil end
+    return fn(v, into)
+end
+
+--!mv:omit
 function Tween(obj, props, time, damping, onDone)
-    local info = TweenInfo.new(time or DEFAULT_TWEEN_TIME, (damping and damping < 1) and BOUNCE or EASE, OUT)
-    local last
+    local freq = math.clamp(1 / math.max(time or DEFAULT_TWEEN_TIME, 0.05), 2, 14)
+    local damp = math.clamp(damping or 1, 0.05, 1)
+    local reg = Motors[obj]
+    if not reg then reg = {}; Motors[obj] = reg end
+    local pending = onDone
     for prop, goal in props do
-        CancelMotors(obj, prop)
-        if obj[prop] ~= goal then
-            if TWEENABLE[typeof(goal)] then
-                local tw = TweenService:Create(obj, info, { [prop] = goal })
-                local reg = Motors[obj]
-                if not reg then reg = {}; Motors[obj] = reg end
-                local entry = { tw, goal }
-                reg[prop] = entry
-                tw.Completed:Once(function()
-                    local r = Motors[obj]
-                    if r and r[prop] == entry then
-                        r[prop] = nil
-                        if next(r) == nil then Motors[obj] = nil end
-                    end
-                end)
-                tw:Play()
-                last = tw
+        local cur = obj[prop]
+        if cur == goal then
+            reg[prop] = nil
+        else
+            local gn, kind = Decompose(goal, DEC_GOAL)
+            local sn = Decompose(cur, DEC_CUR)
+            if gn and sn and gn == sn then
+                local m = reg[prop]
+                local c = m and m.c
+                if not c or #c ~= gn * 3 then c = table.create(gn * 3) end
+                for i = 1, gn do
+                    local b = (i - 1) * 3
+                    local v0 = c[b + 2] or 0
+                    c[b + 1], c[b + 2], c[b + 3] = DEC_CUR[i], v0, DEC_GOAL[i]
+                end
+                if m then
+                    m.c, m.n, m.f, m.d, m.k, m.g, m.done = c, gn, freq, damp, kind, goal, pending
+                else
+                    reg[prop] = { c = c, n = gn, f = freq, d = damp, k = kind, g = goal, done = pending }
+                end
+                pending = nil
             else
                 obj[prop] = goal
             end
         end
     end
-    if not onDone then return end
-    if last then
-        last.Completed:Once(function(state) if state == Enum.PlaybackState.Completed then onDone() end end)
+    if pending then task.defer(pending) end
+    if next(reg) == nil then
+        Motors[obj] = nil
     else
-        task.defer(onDone)
+        WakeTick()
     end
 end
 end
@@ -397,25 +501,55 @@ local function WriteSnap(snap, alpha)
     end
 end
 
+local FadeDone = {}
+
+--!mv:omit
+local function StepFades()
+    local now, fired = os.clock(), 0
+    for snap, f in Fades do
+        local a = (now - f.t) / f.d
+        if a >= 1 then
+            a = 1
+            Fades[snap] = nil
+            if f.done then fired += 1; FadeDone[fired] = f.done end
+        end
+        a = 1 - (1 - a) * (1 - a)
+        WriteSnap(snap, f.from + (f.to - f.from) * a)
+    end
+    for i = 1, fired do
+        local fn = FadeDone[i]
+        FadeDone[i] = nil
+        fn()
+    end
+end
+
+do
+local TickConn = nil
+--!mv:omit
+local function Tick(dt)
+    StepMotors(dt)
+    StepFades()
+    if next(Motors) == nil and next(Fades) == nil then
+        TickConn:Disconnect()
+        TickConn = nil
+    end
+end
+--!mv:omit
+function WakeTick()
+    if not TickConn then TickConn = RunService.RenderStepped:Connect(Tick) end
+end
+end
+
+--!mv:omit
 function ApplySnapshot(snap, alpha, time, onDone)
-    local f = Fades[snap]
-    if f then Fades[snap] = nil; f[2]:Cancel(); f[1]:Destroy() end
     if not time or time <= 0 then
+        Fades[snap] = nil
         WriteSnap(snap, alpha)
         if onDone then onDone() end
         return
     end
-    local driver = Instance.new("NumberValue")
-    driver.Value = snap.a or 0
-    driver.Changed:Connect(function(a) WriteSnap(snap, a) end)
-    local tw = TweenService:Create(driver, TweenInfo.new(time, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Value = alpha })
-    local entry = { driver, tw }
-    Fades[snap] = entry
-    tw.Completed:Once(function(state)
-        if Fades[snap] == entry then Fades[snap] = nil; driver:Destroy() end
-        if state == Enum.PlaybackState.Completed and onDone then onDone() end
-    end)
-    tw:Play()
+    Fades[snap] = { from = snap.a or 0, to = alpha, d = time, done = onDone, t = os.clock() }
+    WakeTick()
 end
 
 function FadeOut(inst)
