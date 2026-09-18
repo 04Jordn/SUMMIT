@@ -908,7 +908,11 @@ do
             local prop = props[i]
             local key = Paint.KeyOf[Paint.Id(inst[prop])]
             if key then
-                CancelMotors(inst)
+                local reg = Motors[inst]
+                if reg and reg[prop] then
+                    reg[prop] = nil
+                    if next(reg) == nil then Motors[inst] = nil end
+                end
                 inst[prop] = palette[key]
             end
         end
@@ -1216,8 +1220,6 @@ function Library:Await(parent, name, timeout)
     if self:Allowed() then
         Warn("Await: %q never appeared under %s. Nothing after this will resolve either.",
             tostring(name), tostring(parent))
-        self:Notify({ Title = "The game patched something", Duration = 8,
-            Content = "It changed something this script uses — let the owner know in the Discord." })
     end
     return nil
 end
