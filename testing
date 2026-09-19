@@ -1,0 +1,3333 @@
+--!nocheck
+--!nolint CommentDirective
+--!nolint SameLineStatement
+--!nolint UnknownGlobal
+--!optimize 2
+
+--=====================================================================================
+--  SUMMITX  —  UI LIBRARY
+--
+--    local Library = loadstring(game:HttpGet(URL))()
+--    local Window  = Library:CreateWindow({ Title = "SummitX", Version = "v1.0" })
+--    local Tab     = Window:AddTab({ Name = "Player", Icon = "user" })
+--    Tab:AddToggle({ Name = "Sprint", Callback = function(on) end })
+--
+--  Window   AddTab AddSettingsTab SelectTab GetTab SetOpen IsOpen Toggle SetScale Destroy
+--  Widgets  AddToggle AddSlider AddDropdown AddKeybind AddInput AddButton AddButtons AddLabel
+--           AddHeader AddDivider AddSection               (tabs and sections take the same calls)
+--  Options  Name Description Default Callback Flag Premium        Handle  h.Get() h.Set(v) h:OnChanged(fn)
+--  Library  Notify SetTheme GetFlag SetFlag SaveConfig ResetSettings RegisterLoop RemoveLoop
+--           Await Require OnCleanup Destroy       Library.Env  Library.Theme  Library.IsMobile
+--  Hub      Configure Authorise RegisterTab Init -- key gate, premium, game/executor checks (section 14)
+--
+--  Executor functions are read once in section 1; the rest of the file reaches them only through Env.
+--  ⚠ MoonVeil: omit only closure-free per-frame functions, and one directive per call tree.
+--=====================================================================================
+
+--------------------------------------------------------------------------- cached globals
+local AS = Enum.AutomaticSize
+local TXA = Enum.TextXAlignment
+local SO = Enum.SortOrder
+local FD = Enum.FillDirection
+local HFA = Enum.HorizontalAlignment
+local VFA = Enum.VerticalAlignment
+local UIT = Enum.UserInputType
+local ETT = Enum.TextTruncate
+local ASM = Enum.ApplyStrokeMode
+local SCL = Enum.ScaleType
+local ES = Enum.EasingStyle
+local UD2 = UDim2.new
+local UFO = UDim2.fromOffset
+local UFS = UDim2.fromScale
+local UD = UDim.new
+local V2 = Vector2.new
+local RGB = Color3.fromRGB
+local CSK = ColorSequenceKeypoint.new
+local NSK = NumberSequenceKeypoint.new
+local TI = TweenInfo.new
+local MC = math.clamp
+local MX = math.max
+local MM = math.min
+local MR = math.round
+local TCL = table.clear
+local TC = table.clone
+local TR = table.remove
+local TCR = table.create
+local TSP = task.spawn
+local TDF = task.defer
+local TDL = task.delay
+local OC = os.clock
+
+local Library = { TabOrder = {} }
+local Private = { Tabs = {} }
+
+--=====================================================================================
+--  1. Executor environment
+--=====================================================================================
+
+local Env = {}
+do
+    local Ok, Genv = pcall(getgenv)
+    Env.Shared = Ok and type(Genv) == "table" and Genv or _G
+    Env.Ref = pcall(cloneref, game) and cloneref or function(O) return O end
+    Env.Request = request or http_request
+    Env.CustomAsset = getcustomasset
+    Env.CanSave = writefile ~= nil and readfile ~= nil and isfile ~= nil
+
+    local OkName, Name, Version = pcall(identifyexecutor)
+    Env.Executor = OkName and Name and (tostring(Name) .. (Version and (" " .. tostring(Version)) or "")) or "unknown"
+
+    local Clip = setclipboard or toclipboard
+    function Env.Copy(Text)
+        return Clip ~= nil and (pcall(Clip, tostring(Text)))
+    end
+
+    function Env.HttpGet(Url)
+        local OkGet, Body = pcall(game.HttpGet, game, Url)
+        return OkGet and Body or nil
+    end
+
+    function Env.ReadFile(Path)
+        if not Env.CanSave then return nil end
+        local OkRead, Data = pcall(function() return isfile(Path) and readfile(Path) or nil end)
+        return OkRead and Data or nil
+    end
+
+    function Env.WriteFile(Path, Data)
+        if not Env.CanSave then return false end
+        return pcall(function()
+            local Dir
+            for Seg in Path:gmatch("([^/]+)/") do
+                Dir = Dir and (Dir .. "/" .. Seg) or Seg
+                if not isfolder(Dir) then makefolder(Dir) end
+            end
+            writefile(Path, Data)
+        end)
+    end
+
+    function Env.DeleteFile(Path)
+        if Env.CanSave then pcall(delfile, Path) end
+    end
+end
+
+--=====================================================================================
+--  2. Services & platform
+--=====================================================================================
+
+local function Service(Name) return Env.Ref(game:GetService(Name)) end
+
+local Players, Uis, RunService = Service("Players"), Service("UserInputService"), Service("RunService")
+local TweenService, HttpService, TeleportService = Service("TweenService"), Service("HttpService"), Service("TeleportService")
+local GuiService, MarketplaceService = Service("GuiService"), Service("MarketplaceService")
+local LocalPlayer = Players.LocalPlayer or Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+
+do
+    local Ok, Hui = pcall(gethui)
+    Env.GuiParent = Ok and typeof(Hui) == "Instance" and Hui or Service("CoreGui")
+end
+
+local IsMobile
+local function SetMobile(V)
+    IsMobile = not not V
+    Library.IsMobile = IsMobile
+end
+do
+    local Ok, TenFoot = pcall(GuiService.IsTenFootInterface, GuiService)
+    SetMobile(not (Ok and TenFoot) and Uis.TouchEnabled and not Uis.KeyboardEnabled)
+end
+
+--=====================================================================================
+--  3. Lifetime
+--=====================================================================================
+
+local Shared = Env.Shared
+local MarkAttribute = "SummitX"
+
+local function Warn(Fmt, ...)
+    warn("[SummitX] " .. string.format(Fmt, ...))
+end
+
+local function NewScope()
+    local Tasks = {}
+    local Scope = {}
+    function Scope.Add(Item) Tasks[#Tasks + 1] = Item; return Item end
+    function Scope.Clean()
+        for _ = 1, 8 do
+            if #Tasks == 0 then return end
+            local List = Tasks
+            Tasks = {}
+            for I = #List, 1, -1 do
+                local Item, Ok, Err = List[I], true, nil
+                if typeof(Item) == "RBXScriptConnection" then Ok, Err = pcall(Item.Disconnect, Item)
+                elseif typeof(Item) == "Instance" then Ok, Err = pcall(Item.Destroy, Item)
+                elseif type(Item) == "function" then Ok, Err = pcall(Item) end
+                if not Ok then Warn("a cleanup task errored (the rest still ran): %s", tostring(Err)) end
+            end
+        end
+    end
+    return Scope
+end
+
+if Shared.SummitCleanup then pcall(Shared.SummitCleanup) end
+for _, Child in Env.GuiParent:GetChildren() do
+    pcall(function()
+        if Child:GetAttribute(MarkAttribute) then Child:Destroy() end
+    end)
+end
+
+local Generation = (tonumber(Shared.SummitGen) or 0) + 1
+Shared.SummitGen = Generation
+local function IsCurrent() return Shared.SummitGen == Generation end
+
+local Lifetime = NewScope()
+Library.Root = Lifetime
+
+function Library:Destroy()
+    if Shared.SummitCleanup == Library.Destroy then Shared.SummitCleanup = nil end
+    Lifetime.Clean()
+end
+Shared.SummitCleanup = Library.Destroy
+
+function Library:OnCleanup(Fn) return Lifetime.Add(Fn) end
+
+local function RandName()
+    local Out = TCR(12)
+    for I = 1, math.random(9, 15) do
+        local C = math.random(52)
+        Out[I] = string.char(C <= 26 and 64 + C or 70 + C)
+    end
+    return table.concat(Out)
+end
+
+local SetCursor
+do
+    local Forced, Saved, GuardConn = false, nil, nil
+    local function Guard()
+        if not Uis.MouseIconEnabled then Uis.MouseIconEnabled = true end
+    end
+    function SetCursor(Show)
+        if Show and not Forced then
+            Forced, Saved = true, Uis.MouseIconEnabled
+            Uis.MouseIconEnabled = true
+            GuardConn = RunService.Heartbeat:Connect(Guard)
+        elseif not Show and Forced then
+            Forced = false
+            if GuardConn then GuardConn:Disconnect(); GuardConn = nil end
+            Uis.MouseIconEnabled = Saved
+        end
+    end
+    Lifetime.Add(function() SetCursor(false) end)
+end
+
+--=====================================================================================
+--  4. Animation
+--=====================================================================================
+
+local Motors = {}
+local Fades = {}
+local WakeTick, Tween, CancelMotors, ApplySnapshot
+
+do
+local SpringEps, VThresh, PThresh, MaxStep = 0.0001, 0.001, 0.001, 0.05
+local DefaultTime = 0.35
+local Exp, Sqrt, Cos, Sin, Abs = math.exp, math.sqrt, math.cos, math.sin, math.abs
+local Next = next
+local Scratch, MotorDone = TCR(4), {}
+local DecGoal, DecCur = TCR(4), TCR(4)
+
+--!mv:omit
+local function SpringCoeffs(Freq, Damp, Dt)
+    local F = Freq * 6.283185307179586
+    local Decay = Exp(-Damp * F * Dt)
+    if Damp == 1 then
+        local Fdt = F * Dt
+        return (1 + Fdt) * Decay, Dt * Decay, -(F * F * Dt) * Decay, (1 - Fdt) * Decay
+    end
+    local W = F * Sqrt(1 - Damp * Damp)
+    local I = Cos(W * Dt)
+    local Y = W > SpringEps and Sin(W * Dt) / W or Dt
+    local Z = Y * F
+    return (I + Damp * Z) * Decay, Y * Decay, -(Z * F) * Decay, (I - Z * Damp) * Decay
+end
+
+--!mv:omit
+local function StepMotors(Dt)
+    if Dt > MaxStep then Dt = MaxStep end
+    local Fired = 0
+    for Obj, Props in Motors do
+        for Prop, M in Props do
+            local Settled, State = true, M.c
+            local A, B, C, D = SpringCoeffs(M.f, M.d, Dt)
+            for I = 1, M.n do
+                local Base = (I - 1) * 3
+                local G = State[Base + 3]
+                local Offset, V0 = State[Base + 1] - G, State[Base + 2]
+                local P, V = Offset * A + V0 * B + G, Offset * C + V0 * D
+                if Abs(V) < VThresh and Abs(P - G) < PThresh then P, V = G, 0 else Settled = false end
+                State[Base + 1], State[Base + 2] = P, V
+                Scratch[I] = P
+            end
+            Obj[Prop] = M.k(Scratch)
+            if Settled then
+                Props[Prop] = nil
+                if M.done then Fired += 1; MotorDone[Fired] = M.done end
+            end
+        end
+        if Next(Props) == nil then Motors[Obj] = nil end
+    end
+    for I = 1, Fired do
+        local Fn = MotorDone[I]
+        MotorDone[I] = nil
+        TSP(Fn)
+    end
+end
+
+--!mv:omit
+local function WriteSnap(Snap, Alpha)
+    if Snap.a == Alpha then return end
+    Snap.a = Alpha
+    local Pane, Inner = Snap.pane, MM(1, Alpha * Snap.lead)
+    for I = 1, #Snap, 3 do
+        local Base = Snap[I + 2]
+        local A = (not Pane or Pane[Snap[I]]) and Alpha or Inner
+        Snap[I][Snap[I + 1]] = Base + (1 - Base) * A
+    end
+end
+
+local FadeDone = {}
+--!mv:omit
+local function StepFades()
+    local Now, Fired = OC(), 0
+    for Snap, F in Fades do
+        local A = (Now - F.t) / F.d
+        if A >= 1 then
+            A = 1
+            Fades[Snap] = nil
+            if F.done then Fired += 1; FadeDone[Fired] = F.done end
+        end
+        A = 1 - (1 - A) * (1 - A)
+        WriteSnap(Snap, F.from + (F.to - F.from) * A)
+    end
+    for I = 1, Fired do
+        local Fn = FadeDone[I]
+        FadeDone[I] = nil
+        Fn()
+    end
+end
+
+local TickConn
+--!mv:omit
+local function Tick(Dt)
+    StepMotors(Dt)
+    StepFades()
+    if Next(Motors) == nil and Next(Fades) == nil then
+        TickConn:Disconnect()
+        TickConn = nil
+    end
+end
+--!mv:omit
+function WakeTick()
+    if not TickConn then TickConn = RunService.PreRender:Connect(Tick) end
+end
+
+--!mv:omit
+function ApplySnapshot(Snap, Alpha, Time, OnDone)
+    if not Time or Time <= 0 then
+        Fades[Snap] = nil
+        WriteSnap(Snap, Alpha)
+        if OnDone then OnDone() end
+        return
+    end
+    Fades[Snap] = { from = Snap.a or 0, to = Alpha, d = Time, done = OnDone, t = OC() }
+    WakeTick()
+end
+
+
+local NewColor3 = Color3.new
+--!mv:omit
+local function CNumber(C) return C[1] end
+--!mv:omit
+local function CColor3(C) return NewColor3(MC(C[1], 0, 1), MC(C[2], 0, 1), MC(C[3], 0, 1)) end
+--!mv:omit
+local function CUDim2(C) return UD2(C[1], C[2], C[3], C[4]) end
+--!mv:omit
+local function CUDim(C) return UD(C[1], C[2]) end
+--!mv:omit
+local function CVector2(C) return V2(C[1], C[2]) end
+local Decompose = {
+    number = function(V, Into) Into[1] = V; return 1, CNumber end,
+    Color3 = function(V, Into) Into[1], Into[2], Into[3] = V.R, V.G, V.B; return 3, CColor3 end,
+    UDim2 = function(V, Into) Into[1], Into[2], Into[3], Into[4] = V.X.Scale, V.X.Offset, V.Y.Scale, V.Y.Offset; return 4, CUDim2 end,
+    UDim = function(V, Into) Into[1], Into[2] = V.Scale, V.Offset; return 2, CUDim end,
+    Vector2 = function(V, Into) Into[1], Into[2] = V.X, V.Y; return 2, CVector2 end,
+}
+
+--!mv:omit
+function Tween(Obj, Props, Time, Damping, OnDone)
+    local Freq = MC(1 / MX(Time or DefaultTime, 0.05), 2, 14)
+    local Damp = MC(Damping or 1, 0.05, 1)
+    local Reg = Motors[Obj]
+    if not Reg then Reg = {}; Motors[Obj] = Reg end
+    local Pending = OnDone
+    for Prop, Goal in Props do
+        local Cur = Obj[Prop]
+        if Cur == Goal then Reg[Prop] = nil; continue end
+        local Dg, Dc = Decompose[typeof(Goal)], Decompose[typeof(Cur)]
+        local Gn, Kind
+        if Dg and Dc then Gn, Kind = Dg(Goal, DecGoal) end
+        if not Gn or Dc(Cur, DecCur) ~= Gn then Obj[Prop] = Goal; continue end
+        local M = Reg[Prop] or {}
+        local State = M.c
+        if not State or #State ~= Gn * 3 then State = TCR(Gn * 3) end
+        for I = 1, Gn do
+            local Base = (I - 1) * 3
+            State[Base + 1], State[Base + 2], State[Base + 3] = DecCur[I], State[Base + 2] or 0, DecGoal[I]
+        end
+        M.c, M.n, M.f, M.d, M.k, M.g, M.done = State, Gn, Freq, Damp, Kind, Goal, Pending
+        Reg[Prop], Pending = M, nil
+    end
+    if Pending then TDF(Pending) end
+    if Next(Reg) == nil then Motors[Obj] = nil else WakeTick() end
+end
+end
+
+--!mv:omit
+function CancelMotors(Obj, Prop)
+    local Reg = Motors[Obj]
+    if not Reg then return nil end
+    if Prop == nil then Motors[Obj] = nil; return nil end
+    local M = Reg[Prop]
+    if not M then return nil end
+    Reg[Prop] = nil
+    if next(Reg) == nil then Motors[Obj] = nil end
+    return M.g
+end
+
+-------------------------------------------------------------------------- snapshot fades
+
+local FadeTime, InnerLead = 0.22, 1.9
+local Snapshot, FadeOut
+do
+local KNone, KGui, KText, KImage, KScroll, KStroke = 0, 1, 2, 3, 4, 5
+local KindByClass = {
+    Frame = KGui, CanvasGroup = KGui, ViewportFrame = KGui, VideoFrame = KGui,
+    TextLabel = KText, TextButton = KText, TextBox = KText,
+    ImageLabel = KImage, ImageButton = KImage, ScrollingFrame = KScroll, UIStroke = KStroke,
+}
+local Transparency = { [KText] = "TextTransparency", [KImage] = "ImageTransparency", [KScroll] = "ScrollBarImageTransparency" }
+
+local KindOrder = {
+    { "UIStroke", KStroke }, { "ScrollingFrame", KScroll }, { "TextLabel", KText }, { "TextButton", KText },
+    { "TextBox", KText }, { "ImageLabel", KImage }, { "ImageButton", KImage }, { "GuiObject", KGui },
+}
+
+--!mv:omit
+local function KindOf(Inst)
+    local Cls = Inst.ClassName
+    local K = KindByClass[Cls]
+    if K ~= nil then return K end
+    K = KNone
+    for _, Pair in KindOrder do
+        if Inst:IsA(Pair[1]) then K = Pair[2]; break end
+    end
+    KindByClass[Cls] = K
+    return K
+end
+
+--!mv:omit
+local function Rest(V, Prop)
+    local Goal = CancelMotors(V, Prop)
+    if Goal == nil then return V[Prop] end
+    V[Prop] = Goal
+    return Goal
+end
+
+--!mv:omit
+local function Push(Snap, N, Inst, Prop)
+    local T = Rest(Inst, Prop)
+    if T >= 1 then return N end
+    Snap[N + 1], Snap[N + 2], Snap[N + 3] = Inst, Prop, T
+    return N + 3
+end
+
+--!mv:omit
+local function Walk(Inst, Snap, N, Skip)
+    if Skip and Skip[Inst] then return N end
+    local Kind = KindOf(Inst)
+    if Kind == KStroke then return Push(Snap, N, Inst, "Transparency") end
+    if Kind ~= KNone then
+        if not Inst.Visible then return N end
+        N = Push(Snap, N, Inst, "BackgroundTransparency")
+        local Prop = Transparency[Kind]
+        if Prop then N = Push(Snap, N, Inst, Prop) end
+    end
+    for _, Child in Inst:GetChildren() do N = Walk(Child, Snap, N, Skip) end
+    return N
+end
+
+function Snapshot(Root, Skip, Pane)
+    local Snap = TCR(1024)
+    Walk(Root, Snap, 0, Skip)
+    Snap.pane, Snap.lead = Pane, InnerLead
+    return Snap
+end
+
+
+function FadeOut(Inst)
+    if typeof(Inst) ~= "Instance" or not Inst.Parent then return end
+    ApplySnapshot(Snapshot(Inst), 1, FadeTime, function() pcall(Inst.Destroy, Inst) end)
+end
+end
+
+-------------------------------------------------------------------------- menu fader
+
+local FaderClass = {}
+FaderClass.__index = FaderClass
+
+function FaderClass.new(Root, Skip, Pane, BeforeSnap)
+    return setmetatable({ Root = Root, Skip = Skip, Pane = Pane, BeforeSnap = BeforeSnap, Snap = nil, Busy = false, Gen = 0 }, FaderClass)
+end
+
+function FaderClass:Capture()
+    if not self.Busy then
+        if self.BeforeSnap then self.BeforeSnap() end
+        self.Snap = Snapshot(self.Root, self.Skip, self.Pane)
+    end
+    return self.Snap
+end
+
+function FaderClass:Alpha() return (self.Snap and self.Snap.a) or 0 end
+
+function FaderClass:Show(Show)
+    self.Gen += 1
+    local Gen, Root = self.Gen, self.Root
+    if Show then
+        Root.Visible = true
+        local Snap = self.Snap
+        if not Snap then return end
+        self.Busy = true
+        ApplySnapshot(Snap, 1)
+        ApplySnapshot(Snap, 0, FadeTime, function() if Gen == self.Gen then self.Busy = false end end)
+    else
+        local Snap = self:Capture()
+        self.Busy = true
+        ApplySnapshot(Snap, 1, FadeTime, function()
+            if Gen ~= self.Gen then return end
+            self.Busy = false
+            Root.Visible = false
+        end)
+    end
+end
+
+function FaderClass:Out(Time)
+    self.Gen += 1
+    local Snap = self:Capture()
+    self.Busy = true
+    ApplySnapshot(Snap, 1, Time)
+end
+
+function FaderClass:In(Time)
+    self.Gen += 1
+    local Gen, Snap = self.Gen, self.Snap
+    if not Snap then return end
+    ApplySnapshot(Snap, 0, Time, function() if Gen == self.Gen then self.Busy = false end end)
+end
+
+--!mv:omit
+function FaderClass:SetRest(Inst, Prop, Value)
+    CancelMotors(Inst, Prop)
+    local Snap = self.Snap
+    local A = (Snap and Snap.a) or 0
+    if A <= 0 then Inst[Prop] = Value; return end
+    local Pane = Snap.pane
+    local At = (not Pane or Pane[Inst]) and A or MM(1, A * InnerLead)
+    local N = #Snap
+    for I = 1, N, 3 do
+        if Snap[I] == Inst and Snap[I + 1] == Prop then
+            Snap[I + 2] = Value
+            Inst[Prop] = Value + (1 - Value) * At
+            return
+        end
+    end
+    Snap[N + 1], Snap[N + 2], Snap[N + 3] = Inst, Prop, Value
+    Inst[Prop] = Value + (1 - Value) * At
+end
+
+--=====================================================================================
+--  5. Theme & palettes
+--=====================================================================================
+
+local ColorWhite, ColorBlack = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
+
+local Theme = {
+    Background = RGB(15, 14, 24), Sidebar = RGB(9, 9, 16), Section = RGB(27, 25, 40),
+    Text = RGB(226, 223, 236), SubText = RGB(186, 182, 208), TabText = RGB(193, 189, 213),
+    Placeholder = RGB(96, 92, 118), Desc = RGB(150, 145, 176),
+    Accent = RGB(128, 120, 184), Active = RGB(156, 147, 210), Close = RGB(154, 150, 179),
+    Stroke = RGB(42, 39, 60), WindowStroke = RGB(60, 55, 86), ToggleActive = RGB(28, 25, 43),
+    Chip = RGB(32, 29, 47), ToggleBorder = RGB(82, 75, 122), InputFocus = RGB(30, 27, 44),
+    DropdownOption = RGB(28, 26, 42), BindBackground = RGB(8, 8, 14), SliderTrack = RGB(13, 12, 21),
+    Bad = RGB(188, 98, 105),
+    GlassLift = RGB(64, 57, 101), GlassFall = RGB(5, 5, 10),
+}
+Library.Theme = setmetatable({}, {
+    __index = Theme,
+    __iter = function() return next, Theme end,
+    __newindex = function() error("SummitX: Library.Theme is read-only -- change colours with Library:SetTheme", 2) end,
+})
+
+local Paint = { Guis = {}, Grad = {}, Spec = {}, KeyOf = {} }
+
+--!mv:omit
+function Paint.Id(C)
+    return MR(C.R * 255) * 65536 + MR(C.G * 255) * 256 + MR(C.B * 255)
+end
+
+function Paint.Index()
+    TCL(Paint.KeyOf)
+    for K, V in Theme do Paint.KeyOf[Paint.Id(V)] = K end
+end
+Paint.Index()
+
+function Paint.GlassSeq(Base)
+    return ColorSequence.new(Base:Lerp(Theme.GlassLift, 0.13), Base:Lerp(Theme.GlassFall, 1.00))
+end
+
+function Paint.EdgeSeq(Base)
+    return ColorSequence.new({
+        CSK(0.00, Base:Lerp(Theme.Active, 0.60)),
+        CSK(0.32, Base:Lerp(Theme.Accent, 0.30)),
+        CSK(0.70, Base),
+        CSK(1.00, Base:Lerp(ColorBlack, 0.55)),
+    })
+end
+
+function Paint.Note(Gradient, Kind, Base)
+    local Key = Paint.KeyOf[Paint.Id(Base)]
+    if Key then Paint.Grad[#Paint.Grad + 1] = { Gradient, Kind, Key } end
+end
+
+function Paint.NoteSpec(Spec, Target)
+    if type(Spec) ~= "table" then return end
+    local List = Paint.Spec
+    for K, V in Spec do
+        local Key = typeof(V) == "Color3" and Paint.KeyOf[Paint.Id(V)] or nil
+        if Key then List[#List + 1] = { Spec, K, Key, Target } end
+    end
+    if #List <= 96 then return end
+    for I = #List, 1, -1 do
+        if not List[I][4].Parent then TR(List, I) end
+    end
+end
+
+do
+    local DefaultTheme = TC(Theme)
+    local BaseHue = 0.687
+    local Fixed = { Bad = true }
+    local Palettes = {
+        { Name = "Violet",   Hue = 0.687 },
+        { Name = "Indigo",   Hue = 0.630, Sat = 0.85, Accent = RGB(104, 128, 238) },
+        { Name = "Ocean",    Hue = 0.545, Sat = 0.55, Accent = RGB(64, 176, 200) },
+        { Name = "Emerald",  Hue = 0.405, Sat = 0.42, Accent = RGB(70, 191, 133) },
+        { Name = "Amber",    Hue = 0.085, Sat = 0.26, Accent = RGB(230, 163, 66) },
+        { Name = "Crimson",  Hue = 0.985, Sat = 0.34, Accent = RGB(226, 86, 102) },
+        { Name = "Rose",     Hue = 0.928, Sat = 0.30, Accent = RGB(224, 143, 178) },
+        { Name = "Graphite", Hue = 0.600, Sat = 0.10, Accent = RGB(148, 157, 180) },
+        { Name = "Onyx",     Hue = 0.600, Sat = 0.00, Accent = RGB(176, 180, 190) },
+    }
+    local TintProps = {
+        Frame = { "BackgroundColor3" },
+        ScrollingFrame = { "BackgroundColor3", "ScrollBarImageColor3" },
+        TextLabel = { "BackgroundColor3", "TextColor3" },
+        TextButton = { "BackgroundColor3", "TextColor3" },
+        TextBox = { "BackgroundColor3", "TextColor3", "PlaceholderColor3" },
+        ImageLabel = { "BackgroundColor3", "ImageColor3" },
+        ImageButton = { "BackgroundColor3", "ImageColor3" },
+        UIStroke = { "Color" },
+    }
+
+    local function Rotate(C, Dh, Sat)
+        local H, S, V = C:ToHSV()
+        if S < 0.02 then return C end
+        return Color3.fromHSV((H + Dh) % 1, MC(S * Sat, 0, 1), V)
+    end
+
+    local function Build(P)
+        local Out = {}
+        local Dh, Sat = (P.Hue - BaseHue) % 1, P.Sat or 1
+        local Identity = Dh == 0 and Sat == 1
+        for K, C in DefaultTheme do
+            Out[K] = (Identity or Fixed[K]) and C or Rotate(C, Dh, Sat)
+        end
+        if P.Accent then
+            Out.Accent = P.Accent
+            Out.Active = P.Accent:Lerp(ColorWhite, 0.22)
+            Out.ToggleBorder = P.Accent:Lerp(ColorBlack, 0.34)
+        end
+        local Seen = {}
+        for K, C in Out do
+            local Id = Paint.Id(C)
+            for _ = 1, 8 do
+                if not Seen[Id] then break end
+                C = Color3.new(C.R, C.G, MC(C.B + 1 / 255, 0, 1))
+                Id = Paint.Id(C)
+            end
+            Seen[Id], Out[K] = true, C
+        end
+        return Out
+    end
+
+    --!mv:omit
+    local function Retint(Inst, Palette)
+        local Props = TintProps[Inst.ClassName]
+        if not Props then return end
+        for I = 1, #Props do
+            local Prop = Props[I]
+            local Key = Paint.KeyOf[Paint.Id(Inst[Prop])]
+            if Key then
+                CancelMotors(Inst, Prop)
+                Inst[Prop] = Palette[Key]
+            end
+        end
+    end
+
+    local function Find(Name)
+        for _, P in Palettes do
+            if P.Name == Name then return P end
+        end
+        return nil
+    end
+
+    function Paint.Apply(Name)
+        local Chosen = Find(Name)
+        if not Chosen then return false end
+        if Chosen.Name == Library.Palette then return true end
+        local Palette = Build(Chosen)
+        for I = #Paint.Guis, 1, -1 do
+            local Gui = Paint.Guis[I]
+            if not Gui.Parent then TR(Paint.Guis, I); continue end
+            for _, D in Gui:GetDescendants() do Retint(D, Palette) end
+        end
+        for _, E in Paint.Spec do E[1][E[2]] = Palette[E[3]] end
+        for K, V in Palette do Theme[K] = V end
+        Paint.Index()
+        for I = #Paint.Grad, 1, -1 do
+            local G = Paint.Grad[I]
+            if not G[1].Parent then TR(Paint.Grad, I); continue end
+            local Base = Theme[G[3]]
+            G[1].Color = G[2] == "glass" and Paint.GlassSeq(Base) or Paint.EdgeSeq(Base)
+        end
+        Library.Palette = Chosen.Name
+        return true
+    end
+
+    local Names = {}
+    for I, P in Palettes do Names[I] = P.Name end
+    Library.Palettes = table.freeze(Names)
+    Library.Palette = Palettes[1].Name
+end
+
+Private.Folder = "SummitX"
+
+function Private.ThemeFile() return Private.Folder .. "/theme.txt" end
+
+function Private.RestoreTheme()
+    local Saved = Env.ReadFile(Private.ThemeFile())
+    if Saved then Paint.Apply((Saved:gsub("%s", ""))) end
+end
+
+function Library:SetTheme(Name)
+    if not Paint.Apply(Name) then
+        Warn("SetTheme(%q): no palette by that name", tostring(Name))
+        return false
+    end
+    Env.WriteFile(Private.ThemeFile(), self.Palette)
+    if Private.ThemeRow and Private.ThemeRow.Get() ~= self.Palette then Private.ThemeRow.Set(self.Palette) end
+    return true
+end
+
+--=====================================================================================
+--  6. Instances
+--=====================================================================================
+
+local L = {
+    PadX = 15, PadY = 15, LabelGap = 5, RailGap = 10, TitleSize = 14, DescSize = 12,
+    TabH = 38, TabGap = 6, TopbarH = 52, PageTop = 50, ChipH = 22,
+    Corner12 = UD(0, 12), Corner8 = UD(0, 8), Corner6 = UD(0, 6), Pill = UD(1, 0),
+    HubSize = 25, HubEdge = 2, ScaleBase = 1.15, MinW = 620, MinH = 340,
+    HubFont = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Heavy, Enum.FontStyle.Italic),
+    Font = Font.new("rbxasset://fonts/families/BuilderSans.json", Enum.FontWeight.ExtraBold),
+}
+Library.Font = L.Font
+
+local Create
+do
+    local StaticDefaults = {
+        Frame = { BorderSizePixel = 0 },
+        ScrollingFrame = { BorderSizePixel = 0, ScrollBarThickness = 3, ScrollBarImageTransparency = 0.5,
+            TopImage = "rbxassetid://6276641225", MidImage = "rbxassetid://6889812721", BottomImage = "rbxassetid://6889812791", CanvasSize = UD2(),
+            ScrollingDirection = Enum.ScrollingDirection.Y, AutomaticCanvasSize = AS.Y },
+        TextLabel = { BorderSizePixel = 0, BackgroundTransparency = 1, Text = "", FontFace = L.Font, TextSize = 13 },
+        TextButton = { BorderSizePixel = 0, BackgroundTransparency = 1, AutoButtonColor = false, Text = "", FontFace = L.Font, TextSize = 13 },
+        TextBox = { BorderSizePixel = 0, BackgroundTransparency = 1, Text = "", ClearTextOnFocus = false, FontFace = L.Font, TextSize = 13 },
+        ImageLabel = { BorderSizePixel = 0, BackgroundTransparency = 1 },
+        ImageButton = { BorderSizePixel = 0, BackgroundTransparency = 1, AutoButtonColor = false },
+    }
+    local ThemedDefaults = {
+        ScrollingFrame = { ScrollBarImageColor3 = "Accent" },
+        TextLabel = { TextColor3 = "Text" }, TextButton = { TextColor3 = "Text" }, TextBox = { TextColor3 = "Text" },
+    }
+    --!mv:omit
+    function Create(Class, Parent, Props)
+        local Obj = Instance.new(Class)
+        local Static, Themed = StaticDefaults[Class], ThemedDefaults[Class]
+        if Static then
+            for K, V in Static do
+                if Props[K] == nil then Obj[K] = V end
+            end
+        end
+        if Themed then
+            for K, Key in Themed do
+                if Props[K] == nil then Obj[K] = Theme[Key] end
+            end
+        end
+        for K, V in Props do Obj[K] = V end
+        if Parent then Obj.Parent = Parent end
+        return Obj
+    end
+end
+
+local function Mount(Order, Scope)
+    local Gui = Create("ScreenGui", nil, { Name = RandName(), ResetOnSpawn = false,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = Order })
+    Gui:SetAttribute(MarkAttribute, true)
+    Gui.Parent = Env.GuiParent
+    Paint.Guis[#Paint.Guis + 1] = Gui
+    local Owner = Scope or Lifetime
+    Owner.Add(function() FadeOut(Gui) end)
+    return Gui
+end
+
+local function Decorate(Obj, Corner, Stroke, Pad)
+    if Corner then Create("UICorner", Obj, { CornerRadius = Corner }) end
+    local StrokeObj
+    if Stroke then
+        StrokeObj = Create("UIStroke", Obj, { Color = Stroke[1], Transparency = Stroke[2], Thickness = Stroke[3] or 1,
+            ApplyStrokeMode = ASM.Border })
+    end
+    if Pad then
+        Create("UIPadding", Obj, { PaddingTop = UD(0, Pad[1] or 0), PaddingBottom = UD(0, Pad[2] or 0),
+            PaddingLeft = UD(0, Pad[3] or 0), PaddingRight = UD(0, Pad[4] or 0) })
+    end
+    return Obj, StrokeObj
+end
+
+local function ListLayout(Parent, Padding, Horizontal, Align)
+    return Create("UIListLayout", Parent, {
+        SortOrder = SO.LayoutOrder,
+        Padding = UD(0, Padding or 0),
+        FillDirection = Horizontal and FD.Horizontal or FD.Vertical,
+        HorizontalAlignment = Align or HFA.Left,
+        VerticalAlignment = Horizontal and VFA.Center or VFA.Top,
+    })
+end
+
+local function DropShadow(Parent, Spread, Transparency, Zindex)
+    return Create("ImageLabel", Parent, { Image = "rbxassetid://8992230677", ScaleType = SCL.Slice, SliceCenter = Rect.new(99, 99, 99, 99),
+        AnchorPoint = V2(0.5, 0.5), Position = UFS(0.5, 0.5), Size = UD2(1, Spread, 1, Spread - 4),
+        ImageColor3 = ColorBlack, ImageTransparency = Transparency, ZIndex = Zindex or 0 })
+end
+
+local function Glass(Obj)
+    local Base = Obj.BackgroundColor3
+    Obj.BackgroundColor3 = ColorWhite
+    Paint.Note(Create("UIGradient", Obj, { Rotation = 90, Color = Paint.GlassSeq(Base) }), "glass", Base)
+    return Obj
+end
+
+local function EdgeGradient(Stroke)
+    local Base = Stroke.Color
+    Stroke.Color = ColorWhite
+    Paint.Note(Create("UIGradient", Stroke, { Rotation = 90, Color = Paint.EdgeSeq(Base),
+        Transparency = NumberSequence.new({
+            NSK(0.00, 0.08),
+            NSK(0.45, 0.34),
+            NSK(1.00, 0.72),
+        }) }), "edge", Base)
+    return Stroke
+end
+
+-------------------------------------------------------------------------- hover states
+
+local HotTargets = {}
+
+local function ResolveSpec(V) return type(V) == "function" and V() or V end
+
+local function ResetInteractives()
+    for Target, Entry in HotTargets do
+        HotTargets[Target] = nil
+        if Target.Parent and (not Entry.gate or Entry.gate()) then
+            CancelMotors(Target)
+            for Prop, V in ResolveSpec(Entry.out) do Target[Prop] = V end
+        end
+    end
+end
+
+local function Interactive(Btn, Spec)
+    local Target = Spec.Target or Btn
+    local Over, Out, Down, T, Gate = Spec.Over, Spec.Out, Spec.Down, Spec.Time or 0.14, Spec.Enabled
+    Paint.NoteSpec(Over, Target); Paint.NoteSpec(Out, Target); Paint.NoteSpec(Down, Target)
+    local Entry = Out and { out = Out, gate = Gate } or nil
+
+    if Over then Btn.MouseEnter:Connect(function()
+        if Gate and not Gate() then return end
+        if Entry then HotTargets[Target] = Entry end
+        Tween(Target, ResolveSpec(Over), T)
+    end) end
+    if Out then Btn.MouseLeave:Connect(function()
+        if Gate and not Gate() then return end
+        HotTargets[Target] = nil
+        Tween(Target, ResolveSpec(Out), T)
+    end) end
+    if Down then
+        Btn.MouseButton1Down:Connect(function()
+            if Gate and not Gate() then return end
+            if Entry then HotTargets[Target] = Entry end
+            Tween(Target, ResolveSpec(Down), T * 0.5)
+        end)
+        Btn.MouseButton1Up:Connect(function()
+            if Gate and not Gate() then return end
+            local Back = ResolveSpec(Over or Out)
+            if Back then Tween(Target, Back, T) end
+        end)
+    end
+    return Btn
+end
+
+-------------------------------------------------------------------------- icons
+
+local Icons = {
+    ["check"] = 94532768701316, ["chevron-down"] = 95086910949405, ["lock"] = 71897067930472, ["maximize-2"] = 108777312690515,
+    ["minimize-2"] = 115725194133672, ["x"] = 73070135088117, ["minus"] = 120931250449806, ["circle"] = 97474013459876,
+    ["user"] = 81899856845503, ["eye"] = 139722329189430, ["map-pin"] = 125589857044225, ["swords"] = 89815227241465,
+    ["settings"] = 101463883805422, ["settings-2"] = 75339943202126, ["layout-grid"] = 80776002921415, ["car"] = 104209031513829,
+    ["crosshair"] = 114929017287945, ["footprints"] = 128293375583452, ["hand"] = 135226632951455, ["search"] = 125618569555993,
+    ["send"] = 120131238507529, ["shapes"] = 94522066975471, ["shield"] = 84528813312016, ["sliders-horizontal"] = 104021219611587,
+    ["smile"] = 72681486741811, ["target"] = 81035867308138, ["venetian-mask"] = 73997918289433, ["video"] = 120899025417114,
+    ["wrench"] = 108764185264619,
+}
+local TabIcons = { Player = "user", Visuals = "eye", Teleport = "map-pin", Combat = "swords", Settings = "settings", Misc = "layout-grid" }
+
+local function ApplyIcon(Img, Name)
+    local Id = Icons[Name]
+    if not Id and type(Name) == "string" and Name:match("^rbxassetid://") then Img.Image = Name; return end
+    Img.Image = Id and ("rbxassetid://" .. Id) or ""
+    if not Id then Warn("icon %q is not in ICONS -- add its Lucide asset id there", tostring(Name)) end
+end
+
+-------------------------------------------------------------------------- factories
+
+local function GlassCard(Parent, Props)
+    Props.BackgroundColor3 = Props.BackgroundColor3 or Theme.Background
+    local Card = Create("Frame", Parent, Props)
+    Glass(Card)
+    local _, Stroke = Decorate(Card, L.Corner12, { Theme.WindowStroke, 0.3, 1.6 })
+    EdgeGradient(Stroke)
+    return Card, Stroke
+end
+
+local function Stack(Kind, Parent, Scale, Props, Gap, Pad, Align)
+    local Frame = Create(Kind == "Page" and "ScrollingFrame" or "Frame", Parent, Props)
+    local List = ListLayout(Frame, Gap, false, Align)
+    if Pad then Decorate(Frame, nil, nil, Pad) end
+    local Extra = Pad and ((Pad[1] or 0) + (Pad[2] or 0)) or 0
+    local function Fit()
+        local Height = List.AbsoluteContentSize.Y / MX(Scale.Scale, 0.01) + Extra
+        if Kind == "Page" then Frame.CanvasSize = UD2(0, 0, 0, Height) else Frame.Size = UD2(1, 0, 0, Height) end
+    end
+    List:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(Fit)
+    local Conn = Scale:GetPropertyChangedSignal("Scale"):Connect(Fit)
+    Frame.Destroying:Connect(function() Conn:Disconnect() end)
+    Fit()
+    return Frame
+end
+
+local ButtonStyles = {
+    Row = { Fill = "Section", Alpha = 0.1, Ink = "SubText", Size = 14, Corner = L.Corner8, Stroke = { "Stroke", 0.55, 1 }, Pad = 12,
+        Over = { BackgroundTransparency = 0, TextColor3 = "Text" }, Down = { BackgroundTransparency = 0.3 },
+        Edge = { Color = "Active", Transparency = 0.25 }, Time = 0.15 },
+    Primary = { Fill = "Accent", Alpha = 0.1, Ink = "White", Size = 13, Corner = L.Corner8, Stroke = { "Active", 0.5, 1 },
+        Over = { BackgroundTransparency = 0 }, Down = { BackgroundTransparency = 0.28 } },
+    Secondary = { Fill = "Section", Alpha = 0.15, Ink = "SubText", Size = 13, Corner = L.Corner8, Stroke = { "Stroke", 0.5, 1 },
+        Over = { BackgroundTransparency = 0 }, Down = { BackgroundTransparency = 0.28 } },
+    Action = { Fill = "Section", Alpha = 0.08, Ink = "Text", Size = 14, Corner = L.Corner8, Stroke = { "Accent", 0.35, 1.4 }, Pad = 18,
+        Over = { BackgroundTransparency = 0 }, Down = { BackgroundTransparency = 0.25 }, Time = 0.12 },
+    Stateful = { Fill = "Section", Alpha = 0.08, Ink = "SubText", Size = 14, Corner = L.Corner8, Stroke = { "Stroke", 0.55, 1.4 }, Pad = 18,
+        Over = { BackgroundTransparency = 0 }, Down = { BackgroundTransparency = 0.25 }, Time = 0.12 },
+    Close = { Ink = "Placeholder", Size = 18, Over = { TextColor3 = "White" } },
+    Icon = { Corner = L.Corner6, Over = { BackgroundTransparency = 0.78 }, Glyph = { Ink = "TabText", Over = "White" } },
+}
+
+local function ThemeColor(Key) return Key == "White" and ColorWhite or Theme[Key] end
+
+local function Resolve(Spec)
+    if not Spec then return nil end
+    local Out = {}
+    for K, V in Spec do Out[K] = type(V) == "string" and ThemeColor(V) or V end
+    return Out
+end
+
+local function Resting(Target, ...)
+    local Out = {}
+    for I = 1, select("#", ...) do
+        local Spec = select(I, ...)
+        if Spec then for K in Spec do Out[K] = Target[K] end end
+    end
+    return Out
+end
+
+local function Button(Style, Parent, Props, Icon)
+    local S = ButtonStyles[Style]
+    local Base = { BackgroundTransparency = S.Alpha or 1, TextSize = S.Size or 13 }
+    if S.Fill then Base.BackgroundColor3 = ThemeColor(S.Fill) end
+    if S.Ink then Base.TextColor3 = ThemeColor(S.Ink) end
+    for K, V in Props do Base[K] = V end
+    local Btn = Create("TextButton", Parent, Base)
+    local _, Stroke = Decorate(Btn, S.Corner, S.Stroke and { ThemeColor(S.Stroke[1]), S.Stroke[2], S.Stroke[3] },
+        S.Pad and { nil, nil, S.Pad, S.Pad })
+    local Over, Down = Resolve(S.Over), Resolve(S.Down)
+    Interactive(Btn, { Over = Over, Out = Resting(Btn, Over, Down), Down = Down, Time = S.Time })
+    if S.Edge and Stroke then
+        local Edge = Resolve(S.Edge)
+        Interactive(Btn, { Target = Stroke, Over = Edge, Out = Resting(Stroke, Edge), Time = S.Time })
+    end
+    if not (S.Glyph and Icon) then return Btn, Stroke, nil end
+    local Glyph = Create("ImageLabel", Btn, { Size = UFO(15, 15), AnchorPoint = V2(0.5, 0.5),
+        Position = UFS(0.5, 0.5), ImageColor3 = ThemeColor(S.Glyph.Ink), ZIndex = (Base.ZIndex or 1) + 1 })
+    ApplyIcon(Glyph, Icon)
+    Interactive(Btn, { Target = Glyph, Over = { ImageColor3 = ThemeColor(S.Glyph.Over) }, Out = { ImageColor3 = Glyph.ImageColor3 } })
+    return Btn, Stroke, Glyph
+end
+
+--=====================================================================================
+--  7. Input & drag
+--=====================================================================================
+
+local function IsPress(T) return T == UIT.MouseButton1 or T == UIT.Touch end
+local function IsMove(T) return T == UIT.MouseMovement or T == UIT.Touch end
+
+local DragScope = NewScope()
+Lifetime.Add(DragScope.Clean)
+
+local function BeginDrag(OnMove)
+    DragScope.Clean()
+    local Latest
+    local function Note(I)
+        if IsMove(I.UserInputType) then Latest = I end
+    end
+    local function Apply()
+        if Latest then local I = Latest; Latest = nil; OnMove(I) end
+    end
+    DragScope.Add(Uis.InputChanged:Connect(Note))
+    DragScope.Add(RunService.PreRender:Connect(Apply))
+    DragScope.Add(Uis.InputEnded:Connect(function(I)
+        if IsPress(I.UserInputType) then DragScope.Clean() end
+    end))
+    DragScope.Add(function() if Latest then OnMove(Latest); Latest = nil end end)
+end
+
+local function BindSlider(Object, Lock, OnMove)
+    local function Update(Input)
+        local Origin, Size = Object.AbsolutePosition, Object.AbsoluteSize
+        OnMove(V2(
+            Size.X > 0 and MC((Input.Position.X - Origin.X) / Size.X, 0, 1) or 0,
+            Size.Y > 0 and MC((Input.Position.Y - Origin.Y) / Size.Y, 0, 1) or 0))
+    end
+    Object.InputBegan:Connect(function(Input)
+        if not IsPress(Input.UserInputType) then return end
+        Update(Input)
+        BeginDrag(Update)
+        Private.SliderDragging = true
+        if Lock then Lock.ScrollingEnabled = false end
+        DragScope.Add(function()
+            Private.SliderDragging = false
+            if Lock then Lock.ScrollingEnabled = true end
+        end)
+    end)
+end
+
+local function SetTopLeft(Target, Vp, X, Y)
+    local Size, Ap, Pos = Target.AbsoluteSize, Target.AnchorPoint, Target.Position
+    Target.Position = UD2(Pos.X.Scale, X + Size.X * Ap.X - Vp.X * Pos.X.Scale,
+                                Pos.Y.Scale, Y + Size.Y * Ap.Y - Vp.Y * Pos.Y.Scale)
+end
+
+local function MakeDraggable(Handle, Target, OnStart, OnMoving)
+    Target = Target or Handle
+    Handle.InputBegan:Connect(function(Input)
+        if not IsPress(Input.UserInputType) then return end
+        if OnStart then OnStart() end
+        local Host = Target.Parent
+        local StartTL = Target.AbsolutePosition - (Host and Host.AbsolutePosition or Vector2.zero)
+        local Origin, Active, Done = Input.Position, false, false
+        BeginDrag(function(I)
+            if Done then return end
+            local Delta = I.Position - Origin
+            if not Active and Delta.Magnitude < 5 then return end
+            if not Active and OnMoving then OnMoving(true) end
+            Active = true
+            local Vp = Host and Host.AbsoluteSize or V2(1280, 720)
+            local Size = Target.AbsoluteSize
+            SetTopLeft(Target, Vp,
+                MC(StartTL.X + Delta.X, 100 - Size.X, Vp.X - 100),
+                MC(StartTL.Y + Delta.Y, 0, Vp.Y - 44))
+        end)
+        DragScope.Add(function()
+            Done = true
+            if Active and OnMoving then OnMoving(false) end
+        end)
+    end)
+end
+
+local function DragFree(Face, Holder, Gui, OnTap, Locked, OnMoved)
+    local Start, Origin, Moved
+    Face.InputBegan:Connect(function(Input)
+        if not IsPress(Input.UserInputType) then return end
+        Start, Moved = Input.Position, false
+        if Locked and Locked() then return end
+        Origin = Holder.AbsolutePosition - Gui.AbsolutePosition
+        Holder.AnchorPoint = Vector2.zero
+        Holder.Position = UFO(Origin.X, Origin.Y)
+        BeginDrag(function(I)
+            local Delta = I.Position - Start
+            if Delta.Magnitude > 6 and not Moved then
+                Moved = true
+                if OnMoved then OnMoved() end
+            end
+            local Vp = Gui.AbsoluteSize
+            Holder.Position = UFO(
+                MC(Origin.X + Delta.X, 4, MX(4, Vp.X - Holder.AbsoluteSize.X - 4)),
+                MC(Origin.Y + Delta.Y, 4, MX(4, Vp.Y - Holder.AbsoluteSize.Y - 4)))
+        end)
+    end)
+    Face.InputEnded:Connect(function(Input)
+        if IsPress(Input.UserInputType) and not Moved then OnTap() end
+    end)
+end
+
+--=====================================================================================
+--  8. Notifications
+--=====================================================================================
+
+do
+    local NotifyMax, BarBody = 6, 40
+    local Live, ToastHolder, Order = {}, nil, 0
+
+    local function Layer()
+        if ToastHolder and ToastHolder.Parent then return ToastHolder end
+        local Gui = Mount(10000)
+        ToastHolder = Create("Frame", Gui, { AnchorPoint = V2(1, 1), Position = UD2(1, -18, 1, -18),
+            Size = UD2(0, 318, 1, -40), BackgroundTransparency = 1 })
+        Create("UIListLayout", ToastHolder, { SortOrder = SO.LayoutOrder, VerticalAlignment = VFA.Bottom,
+            HorizontalAlignment = HFA.Right, Padding = UD(0, 10) })
+        return ToastHolder
+    end
+
+    local function Graphemes(S)
+        local N = 0
+        for _ in utf8.graphemes(S) do N += 1 end
+        return N
+    end
+
+    local function Reveal(Label, Time)
+        local Total = Graphemes(Label.ContentText)
+        if Total == 0 or Time <= 0 then return function() end end
+        Label.MaxVisibleGraphemes = 0
+        local Conn, T0 = nil, OC()
+        local function Stop()
+            if Conn then Conn:Disconnect(); Conn = nil end
+            Label.MaxVisibleGraphemes = -1
+        end
+        Conn = RunService.Heartbeat:Connect(function()
+            if not Label.Parent then return Stop() end
+            local A = (OC() - T0) / Time
+            if A >= 1 then return Stop() end
+            Label.MaxVisibleGraphemes = math.floor(Total * A)
+        end)
+        return Stop
+    end
+
+    function Library:Notify(Cfg)
+        Cfg = type(Cfg) == "table" and Cfg or { Content = tostring(Cfg) }
+        Order += 1
+        local Holder = Create("Frame", Layer(), { Size = UD2(1, 0, 0, 0), AutomaticSize = AS.Y,
+            BackgroundTransparency = 1, LayoutOrder = Order })
+        local Card = Create("Frame", Holder, { Size = UD2(1, 0, 0, 0), AutomaticSize = AS.Y,
+            Position = UD2(1, 24, 0, 0), BackgroundColor3 = Theme.Sidebar, BackgroundTransparency = 0.05, ClipsDescendants = true })
+        Decorate(Card, L.Corner8, { Theme.WindowStroke, 0.4, 1.2 })
+        Create("Frame", Card, { Size = UD2(0, 3, 1, -18), Position = UD2(0, 9, 0.5, 0), AnchorPoint = V2(0, 0.5),
+            BackgroundColor3 = Theme.Accent })
+        local BarClip = Create("Frame", Card, { Size = UD2(1, 0, 0, 2), BackgroundTransparency = 1, ClipsDescendants = true })
+        local Bar = Create("Frame", BarClip, { Size = UD2(1, 0, 0, BarBody), BackgroundColor3 = Theme.Accent, BackgroundTransparency = 0.35 })
+        Decorate(Bar, L.Corner8)
+
+        local Body = Create("Frame", Card, { Position = UFO(22, 0), Size = UD2(1, -54, 0, 0),
+            AutomaticSize = AS.Y, BackgroundTransparency = 1 })
+        ListLayout(Body, 3)
+        Create("UIPadding", Body, { PaddingTop = UD(0, 14), PaddingBottom = UD(0, 14) })
+        Create("TextLabel", Body, { Text = Cfg.Title or Private.Title or "SummitX", Size = UD2(1, 0, 0, 15), TextColor3 = Theme.Text,
+            TextSize = 13, TextXAlignment = TXA.Left,
+            TextTruncate = ETT.AtEnd, LayoutOrder = 1 })
+        local Content
+        if Cfg.Content and Cfg.Content ~= "" then
+            Content = Create("TextLabel", Body, { Text = Cfg.Content, Size = UD2(1, 0, 0, 0), AutomaticSize = AS.Y,
+                TextColor3 = Theme.SubText, TextSize = 12, TextWrapped = true, TextXAlignment = TXA.Left, LayoutOrder = 2 })
+        end
+
+        local Entry, Closed, CardSnap, StopReveal, BarTween = { Instance = Holder }, false, nil, nil, nil
+        function Entry.Close()
+            if Closed then return end
+            Closed = true
+            if StopReveal then StopReveal() end
+            if BarTween then BarTween:Cancel() end
+            local At = table.find(Live, Entry)
+            if At then TR(Live, At) end
+            Holder.Size = UD2(1, 0, 0, Holder.AbsoluteSize.Y)
+            Holder.AutomaticSize = AS.None
+            ApplySnapshot(CardSnap, 1, 0.22)
+            Tween(Card, { Position = UD2(1, 24, 0, 0) }, 0.22)
+            Tween(Holder, { Size = UD2(1, 0, 0, 0) }, 0.3, 1, function()
+                if Holder.Parent then Holder:Destroy() end
+            end)
+        end
+        local Close = Button("Close", Card, { Text = "×", Size = UFO(22, 22), AnchorPoint = V2(1, 0),
+            Position = UD2(1, -10, 0, 12), TextColor3 = Theme.Placeholder, TextSize = 18 })
+        Close.MouseButton1Click:Connect(Entry.Close)
+
+        Live[#Live + 1] = Entry
+        if #Live > NotifyMax then Live[1].Close() end
+
+        CardSnap = Snapshot(Card)
+        ApplySnapshot(CardSnap, 1)
+        ApplySnapshot(CardSnap, 0, 0.34)
+        Tween(Card, { Position = UD2(0, 0, 0, 0) }, 0.34, 0.78)
+        local Dur = tonumber(Cfg.Duration)
+        if not Dur or Dur <= 0 then Dur = 5 end
+        if Content then
+            local N = Graphemes(Content.ContentText)
+            StopReveal = Reveal(Content, MM(MC(N * 0.024, 0.18, 2.2), Dur * 0.7))
+        end
+        BarTween = TweenService:Create(Bar, TI(Dur, ES.Linear), { Size = UD2(0, 0, 0, BarBody) })
+        BarTween:Play()
+        TDL(Dur, Entry.Close)
+        return Entry
+    end
+end
+
+--=====================================================================================
+--  9. Loops
+--=====================================================================================
+
+do
+    local LoopFailLimit = 5
+    local LoopsByType, Pumps = { PreRender = {}, Heartbeat = {}, Stepped = {} }, {}
+    local Renamed = { RenderStepped = "PreRender" }
+    local Pcall = pcall
+
+    --!mv:omit
+    local function Dispatch(Loops, ...)
+        local N = #Loops
+        if N == 0 then return end
+        local Now, Dead = OC(), nil
+        for I = 1, N do
+            local Loop = Loops[I]
+            if Loop.Removed then
+                Dead = Dead or {}
+                Dead[#Dead + 1] = I
+                continue
+            end
+            local Run, Interval = Loop.Active, Loop.Interval
+            if Loop.ShouldRun then Run = Loop.ShouldRun() end
+            if not Run then continue end
+            if Interval then
+                if Now - Loop.Last < Interval then continue end
+                Loop.Last = Now
+            end
+            local Ok, Err = Pcall(Loop.Func, ...)
+            if Ok then Loop.Fails = nil; continue end
+            Loop.Fails = (Loop.Fails or 0) + 1
+            if Loop.Fails == 1 then
+                Warn("a loop errored: %s", tostring(Err))
+            elseif Loop.Fails >= LoopFailLimit then
+                Loop.Removed = true
+                Warn("loop retired after %d errors in a row: %s", LoopFailLimit, tostring(Err))
+            end
+        end
+        if Dead then
+            for I = #Dead, 1, -1 do TR(Loops, Dead[I]) end
+        end
+    end
+
+    function Library:RegisterLoop(LoopType, Func, ShouldRun, Interval)
+        LoopType = Renamed[LoopType] or LoopType
+        local List = LoopsByType[LoopType]
+        if not List then
+            error(("SummitX: RegisterLoop(%q) -- use PreRender, Heartbeat or Stepped"):format(tostring(LoopType)), 2)
+        end
+        local Entry = { Func = Func, Active = true, ShouldRun = ShouldRun, Interval = Interval, Last = 0 }
+        List[#List + 1] = Entry
+        if not Pumps[LoopType] then
+            Pumps[LoopType] = Lifetime.Add(RunService[LoopType]:Connect(function(...) Dispatch(List, ...) end))
+        end
+        return Entry
+    end
+
+    function Library:RemoveLoop(Entry)
+        if Entry then Entry.Removed = true end
+    end
+end
+
+--=====================================================================================
+--  10. Game lookups
+--=====================================================================================
+
+do
+    local Failed = false
+
+    function Library:Await(Parent, Name, Timeout)
+        if typeof(Parent) ~= "Instance" then return nil end
+        local Found = Parent:FindFirstChild(Name)
+        if Found or Failed or not self:Allowed() then return Found end
+        local Deadline, Settled = OC() + (Timeout or 10), nil
+        while OC() < Deadline do
+            task.wait(0.1)
+            Found = Parent:FindFirstChild(Name)
+            if Found then return Found end
+            if game:IsLoaded() then
+                Settled = Settled or OC()
+                if OC() - Settled > 1.5 then break end
+            end
+        end
+        Failed = true
+        Warn("Await: %q never appeared under %s. Nothing after this will resolve either.", tostring(Name), Parent:GetFullName())
+        return nil
+    end
+
+    function Library:Require(Module)
+        if typeof(Module) ~= "Instance" or not Module:IsA("ModuleScript") then return nil end
+        local Ok, Result = pcall(require, Module)
+        if Ok then return Result end
+        Warn("could not load %s: %s", Module:GetFullName(), tostring(Result))
+        return nil
+    end
+end
+
+--=====================================================================================
+--  11. Config store
+--=====================================================================================
+
+local function CloneValue(V) return type(V) == "table" and TC(V) or V end
+
+local StoreClass = {}
+StoreClass.__index = StoreClass
+
+function StoreClass.new(Path)
+    local self = setmetatable({ Path = Path, Flags = {}, Defaults = {}, Saved = {}, Dirty = false, Saving = false, Restoring = false }, StoreClass)
+    if not Path then return self end
+    local Legacy = Path:gsub("/" .. tostring(game.GameId) .. "%.json$", "/" .. tostring(game.PlaceId) .. ".json")
+    local Raw = Env.ReadFile(Path) or (Legacy ~= Path and Env.ReadFile(Legacy)) or nil
+    if not Raw then return self end
+    local Ok, Data = pcall(HttpService.JSONDecode, HttpService, Raw)
+    if Ok and type(Data) == "table" then
+        self.Saved = Data
+    else
+        Warn("config at %q is unreadable; the next save replaces it", Path)
+    end
+    return self
+end
+
+function StoreClass:Apply(Slot, Value)
+    local Now = Slot.Get()
+    if Now ~= nil and type(Now) ~= type(Value) then return end
+    self.Restoring = true
+    local Ok, Err = pcall(Slot.Set, Value)
+    self.Restoring = false
+    if not Ok then Warn("restoring a saved setting errored: %s", tostring(Err)) end
+end
+
+function StoreClass:Register(Flag, Slot)
+    if not Flag then return end
+    if self.Flags[Flag] then
+        Warn("duplicate flag %q -- the later widget wins and the earlier one stops saving. Pass a unique Flag.", Flag)
+    end
+    self.Flags[Flag] = Slot
+    if self.Defaults[Flag] == nil then self.Defaults[Flag] = CloneValue(Slot.Get()) end
+    local Saved = self.Saved[Flag]
+    if Saved ~= nil then
+        TDF(function()
+            if self.Flags[Flag] == Slot then self:Apply(Slot, Saved) end
+        end)
+    end
+end
+
+function StoreClass:Unregister(Flag, Slot)
+    if Flag and (Slot == nil or self.Flags[Flag] == Slot) then self.Flags[Flag] = nil end
+end
+
+function StoreClass:Save()
+    if not (self.Path and Env.CanSave) then return end
+    for Flag, Slot in self.Flags do self.Saved[Flag] = Slot.Get() end
+    self.Dirty = false
+    local Ok, Err = Env.WriteFile(self.Path, HttpService:JSONEncode(self.Saved))
+    if not Ok then Warn("could not save config to %q: %s", self.Path, tostring(Err)) end
+end
+
+function StoreClass:MarkDirty(Flag)
+    if self.Restoring or not Flag or not self.Path then return end
+    self.Dirty = true
+    if self.Saving then return end
+    self.Saving = true
+    TDL(2, function()
+        self.Saving = false
+        if self.Dirty and IsCurrent() then self:Save() end
+    end)
+end
+
+function StoreClass:Reset()
+    local N = 0
+    self.Restoring = true
+    for Flag, Default in self.Defaults do
+        local Slot = self.Flags[Flag]
+        if Slot then
+            pcall(Slot.Set, CloneValue(Default))
+            N += 1
+        end
+    end
+    self.Restoring = false
+    self.Saved, self.Dirty = {}, false
+    if self.Path then Env.DeleteFile(self.Path) end
+    return N
+end
+
+local function ActiveStore(Method, Flag)
+    local Window = Library.Window
+    local Store = Window and Window.Store
+    if not Store then Warn("%s(%q): no window is built yet", Method, tostring(Flag)) end
+    return Store
+end
+
+function Library:GetFlag(Flag)
+    local Store = ActiveStore("GetFlag", Flag)
+    local Slot = Store and Store.Flags[Flag]
+    if Store and not Slot then Warn("GetFlag(%q): no widget owns that flag", tostring(Flag)) end
+    if not Slot then return nil end
+    return CloneValue(Slot.Get())
+end
+
+function Library:SetFlag(Flag, Value)
+    local Store = ActiveStore("SetFlag", Flag)
+    local Slot = Store and Store.Flags[Flag]
+    if Store and not Slot then Warn("SetFlag(%q): no widget owns that flag", tostring(Flag)) end
+    if not Slot then return false end
+    Slot.Set(Value)
+    return true
+end
+
+function Library:SaveConfig()
+    local Store = ActiveStore("SaveConfig")
+    if Store then Store:Save() end
+end
+
+function Library:ResetSettings()
+    local Store = ActiveStore("ResetSettings")
+    local N = Store and Store:Reset() or 0
+    self:SetTheme(self.Palettes[1])
+    return N
+end
+
+--=====================================================================================
+--  12. Widgets
+--=====================================================================================
+
+local function Spawn(Fn, ...)
+    if Fn ~= nil then TSP(Fn, ...) end
+end
+
+-------------------------------------------------------------------------- premium state
+
+Private.Premium = false
+Library.IsPremium = false
+Library.PremiumState = "checking"        -- checking | free | premium | blocked
+
+local PremiumGates, PremiumHooks = {}, {}
+
+--!mv:vm
+local function PremiumNag()
+    local Url = Private.StoreUrl
+    if Url then Env.Copy(Url) end
+    Library:Notify({ Title = "Premium only", Duration = 6, Content = Url
+        and ("This feature needs Premium. Get it at " .. (Url:gsub("^%w+://", "")) .. " — link copied.")
+        or "This feature needs Premium." })
+end
+
+--!mv:vm
+function Library:SetPremium(Value, State)
+    Value = not not Value
+    local Changed = Value ~= Private.Premium
+    Private.Premium = Value
+    self.IsPremium, self.PremiumState = Value, State or (Value and "premium" or "free")
+    for Overlay in PremiumGates do
+        Overlay.Visible = not Value
+        Overlay.Active = not Value
+    end
+    if Changed then
+        local Hooks = {}
+        for Fn in PremiumHooks do Hooks[#Hooks + 1] = Fn end
+        for _, Fn in Hooks do TSP(Fn, Value) end
+    end
+end
+
+function Library:OnPremiumChanged(Fn)
+    if type(Fn) ~= "function" then return function() end end
+    PremiumHooks[Fn] = true
+    return function() PremiumHooks[Fn] = nil end
+end
+Lifetime.Add(function() TCL(PremiumHooks) end)
+
+local function Locked(Props) return Props.Premium and not Private.Premium end
+
+--!mv:vm
+local function Gate(Host, Props, Corner)
+    if not Props.Premium then return end
+    local Pad = Host:FindFirstChildOfClass("UIPadding")
+    local Pl, Pr = Pad and Pad.PaddingLeft.Offset or 0, Pad and Pad.PaddingRight.Offset or 0
+    local Pt, Pb = Pad and Pad.PaddingTop.Offset or 0, Pad and Pad.PaddingBottom.Offset or 0
+    local Overlay = Create("TextButton", Host, { Size = UD2(1, Pl + Pr, 1, Pt + Pb), Position = UFO(-Pl, -Pt),
+        BackgroundColor3 = ColorBlack, BackgroundTransparency = 0.55, ZIndex = 60 })
+    Decorate(Overlay, Corner or L.Corner8)
+    local OwnText = Host:IsA("TextButton") and Host.Text ~= "" and Host.TextXAlignment == TXA.Center
+    local Lock = Create("ImageLabel", Overlay, { Size = UFO(16, 16),
+        AnchorPoint = OwnText and V2(1, 0.5) or V2(0.5, 0.5),
+        Position = OwnText and UD2(1, -(L.PadX + Pr), 0.5, 0) or UFS(0.5, 0.5),
+        ImageColor3 = ColorWhite, ImageTransparency = 0.25, ZIndex = 61 })
+    ApplyIcon(Lock, "lock")
+    Overlay.MouseButton1Click:Connect(PremiumNag)
+    PremiumGates[Overlay] = true
+    Overlay.Destroying:Connect(function() PremiumGates[Overlay] = nil end)
+    Overlay.Visible = not Private.Premium
+    Overlay.Active = not Private.Premium
+    return Overlay
+end
+
+-------------------------------------------------------------------------- keybinds
+
+local Binds, Pending = {}, nil
+
+local KeyShort = {
+    LeftShift = "LShift", RightShift = "RShift", LeftControl = "LCtrl", RightControl = "RCtrl",
+    LeftAlt = "LAlt", RightAlt = "RAlt", LeftSuper = "LWin", RightSuper = "RWin",
+    Backspace = "Bksp", CapsLock = "Caps", PageUp = "PgUp", PageDown = "PgDn", Delete = "Del",
+    Insert = "Ins", Escape = "Esc", Return = "Enter", KeypadEnter = "NumEnter", PrintScreen = "PrtSc",
+}
+
+local function NewBind(Key, Action, CanHold)
+    local Entry = { Key = Key or "NONE", Mode = "Toggle", Action = Action, CanHold = CanHold }
+    Binds[Entry] = true
+    return Entry
+end
+
+local function DropBind(Entry)
+    Binds[Entry] = nil
+    if Pending == Entry then Pending = nil end
+end
+Lifetime.Add(function() TCL(Binds); Pending = nil end)
+
+local function BindSlot(Entry)
+    return {
+        Get = function() return Entry.Mode == "Hold" and (Entry.Key .. "|hold") or Entry.Key end,
+        Set = function(V)
+            V = tostring(V)
+            local Key, Mode = V:match("^(.-)|(.+)$")
+            Entry.Key = Key or V
+            Entry.Mode = (Mode == "hold" and Entry.CanHold) and "Hold" or "Toggle"
+            if Entry.Render then Entry.Render() end
+        end,
+    }
+end
+
+local function Disarm(Entry)
+    if Entry.Render then Entry.Render() end
+    if Entry.Pill then Tween(Entry.Pill, { TextColor3 = Theme.SubText, BackgroundColor3 = Theme.BindBackground }) end
+end
+
+local function Arm(Entry)
+    if Pending and Pending ~= Entry then Disarm(Pending) end
+    Pending = Entry
+    Entry.Pill.Text = "..."
+    Tween(Entry.Pill, { TextColor3 = Theme.Accent, BackgroundColor3 = Theme.Section })
+end
+
+local function BindPill(Parent, Entry, Flag, Store)
+    local Pill = Create("TextButton", Parent, { AutomaticSize = AS.X,
+        Size = UD2(0, 0, 0, 22), LayoutOrder = 5, BackgroundColor3 = Theme.BindBackground, BackgroundTransparency = 0.5,
+        TextColor3 = Theme.SubText, TextSize = 10 })
+    Decorate(Pill, L.Corner6, { Theme.Stroke, 0.7, 1 }, { nil, nil, 10, 10 })
+    Create("UISizeConstraint", Pill, { MinSize = V2(44, 22) })
+    Interactive(Pill, { Over = { BackgroundTransparency = 0.2 }, Out = { BackgroundTransparency = 0.5 }, Time = 0.15 })
+
+    Entry.Pill, Entry.Flag, Entry.Store = Pill, Flag, Store
+    function Entry.Render()
+        Pill.Text = (KeyShort[Entry.Key] or Entry.Key) .. (Entry.Mode == "Hold" and "  HOLD" or "")
+    end
+    Entry.Render()
+
+    local Slot = BindSlot(Entry)
+    Store:Register(Flag, Slot)
+    Pill.Destroying:Connect(function()
+        if Pending == Entry then Pending = nil end
+        Store:Unregister(Flag, Slot)
+    end)
+    Pill.MouseButton1Click:Connect(function() Arm(Entry) end)
+    if Entry.CanHold then
+        Pill.MouseButton2Click:Connect(function()
+            Entry.Mode = Entry.Mode == "Hold" and "Toggle" or "Hold"
+            Entry.Render()
+            Store:MarkDirty(Flag)
+        end)
+    end
+    return Pill, Slot
+end
+
+-------------------------------------------------------------------------- observers
+
+local Observers = setmetatable({}, { __mode = "k" })
+
+local function AddObserver(Handle, Fn)
+    local List = Observers[Handle]
+    if not List then List = {}; Observers[Handle] = List end
+    List[Fn] = true
+    return function() List[Fn] = nil end
+end
+
+local function FireObservers(Handle, Value)
+    local List = Observers[Handle]
+    if not List then return end
+    for Fn in List do TSP(Fn, CloneValue(Value)) end
+end
+
+-------------------------------------------------------------------------- containers
+
+local Container = {}
+Container.__index = Container
+
+local function NewContainer(Window, Parent, TabName, Page)
+    return setmetatable({ Window = Window, Parent = Parent, TabName = TabName, Page = Page }, Container)
+end
+
+local function FlagFor(Ctx, Props)
+    if Props.Flag == false then return nil end
+    return Props.Flag or (Ctx.TabName .. "::" .. tostring(Props.Name))
+end
+
+local function Expect(Props, Field, Kind)
+    local V = Props[Field]
+    if V == nil then error(("SummitX: %s is required"):format(Field), 3) end
+    if Kind and typeof(V) ~= Kind then error(("SummitX: %s must be a %s, got %s"):format(Field, Kind, typeof(V)), 3) end
+end
+
+local function MakeRow(Parent, Props, Active)
+    local Frame = Create("Frame", Parent, { Size = UD2(1, 0, 0, 0), AutomaticSize = AS.Y,
+        BackgroundColor3 = Active and Theme.ToggleActive or Theme.Section, BackgroundTransparency = 0.15 })
+    local _, Stroke = Decorate(Frame, L.Corner8, { Active and Theme.Active or Theme.Stroke, Active and 0.2 or 0.55, 1 })
+
+    local Content = Create("Frame", Frame, { BackgroundTransparency = 1, Position = UD2(0, L.PadX, 0, 0),
+        Size = UD2(1, -L.PadX * 2, 0, 0), AutomaticSize = AS.Y })
+    Create("UIListLayout", Content, { SortOrder = SO.LayoutOrder, FillDirection = FD.Horizontal,
+        VerticalAlignment = VFA.Center, Padding = UD(0, L.RailGap) })
+    Create("UIPadding", Content, { PaddingTop = UD(0, L.PadY), PaddingBottom = UD(0, L.PadY) })
+
+    local Desc = Props.Description or Props.Content
+    local HasDesc = Desc ~= nil and Desc ~= ""
+    local Holder = HasDesc and Create("Frame", Content, { BackgroundTransparency = 1, Size = UD2(0, 0, 0, 0),
+        AutomaticSize = AS.Y, LayoutOrder = 1 }) or nil
+    if Holder then ListLayout(Holder, L.LabelGap) end
+    local NameLbl = Create("TextLabel", Holder or Content, { Text = Props.Name or "", TextColor3 = Theme.SubText,
+        TextSize = L.TitleSize, TextXAlignment = TXA.Left,
+        TextTruncate = ETT.AtEnd, Size = UD2(1, 0, 0, 15), LayoutOrder = 1 })
+    Create("UIFlexItem", Holder or NameLbl, { FlexMode = Enum.UIFlexMode.Fill })
+    if HasDesc then
+        Create("TextLabel", Holder, { Text = Desc, TextColor3 = Theme.Desc, TextSize = L.DescSize,
+            TextXAlignment = TXA.Left, TextWrapped = true, Size = UD2(1, 0, 0, 0),
+            AutomaticSize = AS.Y, LayoutOrder = 2 })
+    end
+
+    local RailFrame
+    local function Rail()
+        if not RailFrame then
+            RailFrame = Create("Frame", Content, { BackgroundTransparency = 1, Size = UD2(0, 0, 0, 0),
+                AutomaticSize = AS.XY, LayoutOrder = 2 })
+            ListLayout(RailFrame, L.RailGap, true, HFA.Right)
+        end
+        return RailFrame
+    end
+    return Frame, Stroke, NameLbl, Rail
+end
+
+local function RowHit(Frame)
+    local Hit = Create("TextButton", Frame, { Size = UFS(1, 1), ZIndex = 0 })
+    Interactive(Hit, { Target = Frame, Over = { BackgroundTransparency = 0.02 }, Out = { BackgroundTransparency = 0.15 }, Time = 0.12 })
+    return Hit
+end
+
+local function RowPaint(Fader, Frame, Stroke, NameLbl, Tick)
+    return function(On, Animated)
+        local St, Tt = On and 0.2 or 0.55, On and 0 or 1
+        local Fc = On and Theme.ToggleActive or Theme.Section
+        local Sc = On and Theme.Active or Theme.Stroke
+        local Tc = On and Theme.Text or Theme.SubText
+        if Animated and Fader:Alpha() == 0 then
+            Tween(Tick, { ImageTransparency = Tt }, 0.15)
+            Tween(Frame, { BackgroundColor3 = Fc })
+            Tween(Stroke, { Color = Sc, Transparency = St })
+            Tween(NameLbl, { TextColor3 = Tc }, 0.2)
+        else
+            CancelMotors(Frame, "BackgroundColor3"); CancelMotors(Stroke, "Color"); CancelMotors(NameLbl, "TextColor3")
+            Frame.BackgroundColor3, NameLbl.TextColor3, Stroke.Color = Fc, Tc, Sc
+            Fader:SetRest(Stroke, "Transparency", St)
+            Fader:SetRest(Tick, "ImageTransparency", Tt)
+        end
+    end
+end
+
+local function Bind(Ctx, Props, Flag, Getter, Setter, LoopEntry)
+    local Store = Ctx.Window.Store
+    local H = { Flag = Flag, Get = Getter, Set = Setter, OnChanged = AddObserver }
+    local Slot = { Get = Getter, Set = Setter }
+    Store:Register(Flag, Slot)
+
+    local Torn, Extras = false, {}
+    function H.AddTeardown(Fn) Extras[#Extras + 1] = Fn end
+    function H.Teardown()
+        if Torn then return end
+        Torn = true
+        Store:Unregister(Flag, Slot)
+        if LoopEntry then Library:RemoveLoop(LoopEntry) end
+        for _, Fn in Extras do Fn() end
+    end
+
+    return H, function(Value)
+        Store:MarkDirty(Flag)
+        if Props.Callback and not Locked(Props) then TSP(Props.Callback, CloneValue(Value)) end
+        FireObservers(H, Value)
+    end
+end
+
+local function WireTeardown(H)
+    if type(H) == "table" and H.Teardown and H.Instance then H.Instance.Destroying:Connect(H.Teardown) end
+    return H
+end
+
+local function DefineWidget(Kind, Build)
+    Container["Add" .. Kind] = function(self, Props)
+        if type(Props) == "table" then Props = TC(Props) end
+        return WireTeardown(Build(self, Props or {}))
+    end
+end
+
+local function DefineControl(Kind, Build)
+    Container["Add" .. Kind] = function(self, Props)
+        Props = TC(Props or {})
+        local Frame, Stroke, NameLbl, Rail = MakeRow(self.Parent, Props, Props.Active)
+        Gate(Frame, Props)
+        local H = WireTeardown(Build(self, Props, { Instance = Frame, Stroke = Stroke, NameLabel = NameLbl, Rail = Rail }))
+        if type(H) == "table" then H.Row = Frame elseif H == nil then Frame:Destroy() end
+        return H
+    end
+end
+
+-------------------------------------------------------------------------- on-screen buttons (touch)
+
+local function ActionButton(Window, Group, Text, OnFire, Stateful)
+    local Gui, A = Window.Gui, Window.Actions
+    local Holder = Create("Frame", Gui, { Size = UFO(0, 38), AutomaticSize = AS.X,
+        Position = UD2(0, 18, 0.34, 0), BackgroundTransparency = 1, ZIndex = 150, Visible = false })
+    local Entry = { Group = Group, Holder = Holder, Allowed = true, Moved = false }
+    A.List[#A.List + 1] = Entry
+
+    local function Free()
+        if Entry.Slot then A.Slots[Entry.Slot] = nil; Entry.Slot = nil end
+    end
+    function Entry.Draw()
+        local On = A.Shown[Group] and Entry.Allowed
+        if On and not (Entry.Slot or Entry.Moved) then
+            local Slot = 1
+            while A.Slots[Slot] do Slot += 1 end
+            A.Slots[Slot], Entry.Slot = true, Slot
+            Holder.Position = UD2(0, 18, 0.34, (Slot - 1) * 48)
+        elseif not On then
+            Free()
+        end
+        Holder.Visible = On
+    end
+    Holder.Destroying:Connect(function()
+        Free()
+        local At = table.find(A.List, Entry)
+        if At then TR(A.List, At) end
+    end)
+
+    local Face, FaceStroke = Button(Stateful and "Stateful" or "Action", Holder, { Text = Text, Size = UD2(0, 0, 1, 0),
+        AutomaticSize = AS.X, ZIndex = 150 })
+    DragFree(Face, Holder, Gui, OnFire, function() return A.Locked end, function()
+        Entry.Moved = true
+        Free()
+    end)
+
+    function Entry.SetOn(On, Animated)
+        local Fc, Tc = On and Theme.ToggleActive or Theme.Section, On and Theme.Text or Theme.SubText
+        local Sc, St = On and Theme.Active or Theme.Stroke, On and 0.2 or 0.55
+        if Animated then
+            Tween(Face, { BackgroundColor3 = Fc, TextColor3 = Tc }, 0.2)
+            Tween(FaceStroke, { Color = Sc, Transparency = St })
+        else
+            CancelMotors(Face); CancelMotors(FaceStroke)
+            Face.BackgroundColor3, Face.TextColor3, FaceStroke.Color, FaceStroke.Transparency = Fc, Tc, Sc, St
+        end
+    end
+    function Entry.SetAllowed(Ok)
+        Ok = not not Ok
+        if Entry.Allowed == Ok then return end
+        Entry.Allowed = Ok
+        Entry.Draw()
+    end
+    function Entry.Destroy() Holder:Destroy() end
+
+    Entry.Draw()
+    return Entry
+end
+
+local function ShowActions(Window, Group, On)
+    local A = Window.Actions
+    A.Shown[Group] = not not On
+    for _, Entry in A.List do
+        if Entry.Group == Group then Entry.Draw() end
+    end
+end
+
+-------------------------------------------------------------------------- static widgets
+
+DefineWidget("Header", function(Ctx, Props)
+    local Text = type(Props) == "string" and Props or Props.Name or Props.Text or ""
+    local Header = Create("TextLabel", Ctx.Parent, { Text = Text, Size = UD2(1, 0, 0, 24), TextColor3 = Theme.Accent,
+        TextSize = 13, TextXAlignment = TXA.Left })
+    Decorate(Header, nil, nil, { 10, nil, L.PadX, nil })
+    return Header
+end)
+
+DefineWidget("Divider", function(Ctx)
+    local Wrap = Create("Frame", Ctx.Parent, { Size = UD2(1, 0, 0, 9), BackgroundTransparency = 1 })
+    Create("Frame", Wrap, { Size = UD2(1, -L.PadX * 2, 0, 1), Position = UD2(0, L.PadX, 0.5, 0),
+        BackgroundColor3 = Theme.Stroke, BackgroundTransparency = 0.45 })
+    return Wrap
+end)
+
+DefineWidget("Label", function(Ctx, Props)
+    if type(Props) == "string" then Props = { Name = Props } end
+    local Frame = Create("Frame", Ctx.Parent, { Size = UD2(1, 0, 0, 0), AutomaticSize = AS.Y,
+        BackgroundColor3 = Theme.Section, BackgroundTransparency = 0.15 })
+    Decorate(Frame, L.Corner8, { Theme.Stroke, 0.55, 1 }, { L.PadY, L.PadY, L.PadX, L.PadX })
+    ListLayout(Frame, L.LabelGap)
+    local function Line(Order, Color, Size)
+        return Create("TextLabel", Frame, { TextColor3 = Color, TextSize = Size, TextWrapped = true,
+            TextXAlignment = TXA.Left, Size = UD2(1, 0, 0, 0), AutomaticSize = AS.Y, LayoutOrder = Order })
+    end
+    local Title = Line(1, Theme.SubText, L.TitleSize)
+    local Body = Line(2, Theme.Desc, L.DescSize)
+    local function Put(Label, Text)
+        Text = Text ~= nil and tostring(Text) or ""
+        Label.Text, Label.Visible = Text, Text ~= ""
+    end
+    Put(Title, Props.Name)
+    Put(Body, Props.Description or Props.Content)
+
+    local H = { Instance = Frame, Row = Frame }
+    function H.Get() return Body.Text end
+    function H.Set(Text) Put(Body, Text) end
+    function H.SetName(Text) Put(Title, Text) end
+    return H
+end)
+
+-------------------------------------------------------------------------- buttons
+
+local function BuildButton(Parent, Props, Size)
+    local Btn = Button("Row", Parent, { Text = Props.Name, Size = Size, TextTruncate = ETT.AtEnd })
+    Btn.MouseButton1Click:Connect(function() Spawn(Props.Callback) end)
+    Gate(Btn, Props)
+    return Btn
+end
+
+DefineWidget("Button", function(Ctx, Props)
+    Expect(Props, "Name")
+    return BuildButton(Ctx.Parent, Props, UD2(1, 0, 0, 40))
+end)
+
+DefineWidget("Buttons", function(Ctx, List)
+    local N, Gap = #List, 8
+    local Row = Create("Frame", Ctx.Parent, { Size = UD2(1, 0, 0, 40), BackgroundTransparency = 1 })
+    ListLayout(Row, Gap, true)
+    local Made = {}
+    for I, Props in List do
+        Made[I] = BuildButton(Row, TC(Props), UD2(1 / N, -Gap * (N - 1) / N, 1, 0))
+        Made[I].LayoutOrder = I
+    end
+    return Made
+end)
+
+-------------------------------------------------------------------------- toggle
+
+local function Checkbox(Parent, On)
+    local Ring = Create("Frame", Parent, { Size = UFO(16, 16), BackgroundTransparency = 1, LayoutOrder = 10 })
+    local Outline = Create("Frame", Ring, { Size = UFS(1, 1), BackgroundTransparency = 1 })
+    Decorate(Outline, UD(0.2, 0), { Theme.ToggleBorder, 0.05, 2.5 })
+    local Tick = Create("ImageLabel", Ring, { Size = UFS(1, 1), AnchorPoint = V2(0.5, 0.5),
+        Position = UFS(0.5, 0.5), ScaleType = SCL.Fit, ImageColor3 = Theme.Active, ImageTransparency = On and 0 or 1 })
+    ApplyIcon(Tick, "check")
+    return Ring, Tick
+end
+
+DefineControl("Toggle", function(Ctx, Props, Host)
+    Expect(Props, "Name")
+    local Window = Ctx.Window
+    local Flag = FlagFor(Ctx, Props)
+    local State = not not Props.Default
+    local Hit = RowHit(Host.Instance)
+    local Ring, Tick = Checkbox(Host.Rail(), State)
+
+    local LoopEntry
+    if Props.Loop then
+        local Gated = Props.Premium and function() return State and Private.Premium end or nil
+        LoopEntry = Library:RegisterLoop(Props.Loop.Type or "PreRender", Props.Loop.Func, Gated, Props.Loop.Interval)
+        LoopEntry.Active = State
+    end
+
+    local ActionBtn
+    local function Shown() return State and not Locked(Props) end
+    local Repaint = RowPaint(Window.Fader, Host.Instance, Host.Stroke, Host.NameLabel, Tick)
+    local function ApplyVisual(Animated)
+        local On = Shown()
+        Repaint(On, Animated)
+        if ActionBtn then
+            ActionBtn.SetAllowed(not Locked(Props))
+            ActionBtn.SetOn(On, Animated)
+        end
+    end
+
+    local Changed
+    local function SetState(V)
+        V = not not V
+        if State == V then return end
+        State = V
+        if LoopEntry then LoopEntry.Active = State end
+        ApplyVisual(true)
+        Changed(State)
+    end
+
+    local H
+    H, Changed = Bind(Ctx, Props, Flag, function() return State end, SetState, LoopEntry)
+    H.Instance = Ring
+
+    if Props.Keybind ~= nil and not IsMobile then
+        local Entry = NewBind(Props.Keybind, function(Down)
+            if Down == nil then SetState(not State) else SetState(Down) end
+        end, true)
+        BindPill(Host.Rail(), Entry, Flag and (Flag .. "_bind") or nil, Window.Store)
+        H.AddTeardown(function() DropBind(Entry) end)
+    elseif Props.Keybind ~= nil then
+        ActionBtn = ActionButton(Window, "Toggle", Props.Name, function()
+            if Locked(Props) then PremiumNag(); return end
+            SetState(not State)
+        end, true)
+        H.AddTeardown(ActionBtn.Destroy)
+    end
+
+    ApplyVisual(false)
+    if Shown() then Spawn(Props.Callback, State) end
+    if Props.Premium then
+        H.AddTeardown(Library:OnPremiumChanged(function(On)
+            ApplyVisual(true)
+            if On and State then Spawn(Props.Callback, State) end
+        end))
+    end
+    Hit.MouseButton1Click:Connect(function() SetState(not State) end)
+    return H
+end)
+
+-------------------------------------------------------------------------- keybind
+
+DefineControl("Keybind", function(Ctx, Props, Host)
+    Expect(Props, "Name")
+    local Window = Ctx.Window
+    local Flag = FlagFor(Ctx, Props)
+    local function Fire(...)
+        if Locked(Props) then return end
+        Spawn(Props.Callback, ...)
+    end
+
+    if not IsMobile then
+        local BindFlag = Flag and (Flag .. "_bind") or nil
+        local Entry = NewBind(Props.Keybind, Fire, false)
+        local Pill, Slot = BindPill(Host.Rail(), Entry, BindFlag, Window.Store)
+        local H = { Flag = BindFlag, Instance = Pill, Get = Slot.Get, OnChanged = AddObserver }
+        function H.Set(V)
+            Slot.Set(V)
+            Window.Store:MarkDirty(BindFlag)
+            FireObservers(H, Slot.Get())
+        end
+        function H.Teardown() DropBind(Entry) end
+        return H
+    end
+
+    local Hit = RowHit(Host.Instance)
+    local State = not not Props.Default
+    local Ring, Tick = Checkbox(Host.Rail(), State)
+    local Btn, Changed = nil, nil
+    local Repaint = RowPaint(Window.Fader, Host.Instance, Host.Stroke, Host.NameLabel, Tick)
+    local function ApplyVisual(Animated)
+        local On = State and not Locked(Props)
+        Repaint(On, Animated)
+        if On and not Btn then Btn = ActionButton(Window, "Action", Props.Name, Fire)
+        elseif not On and Btn then Btn.Destroy(); Btn = nil end
+    end
+    local function SetState(V)
+        V = not not V
+        if State == V then return end
+        State = V
+        ApplyVisual(true)
+        Changed(State)
+    end
+
+    local H
+    H, Changed = Bind(Ctx, Props, Flag, function() return State end, SetState)
+    H.Instance = Ring
+    H.AddTeardown(function() if Btn then Btn.Destroy(); Btn = nil end end)
+    if Props.Premium then H.AddTeardown(Library:OnPremiumChanged(function() ApplyVisual(true) end)) end
+    ApplyVisual(false)
+    Hit.MouseButton1Click:Connect(function() SetState(not State) end)
+    return H
+end)
+
+-------------------------------------------------------------------------- slider
+
+DefineControl("Slider", function(Ctx, Props, Host)
+    Expect(Props, "Name")
+    local Min, Max = Props.Min or 0, Props.Max or 100
+    if Max < Min then error(("SummitX: %s: Max (%s) is below Min (%s)"):format(tostring(Props.Name), tostring(Max), tostring(Min)), 3) end
+    local Span = Max - Min
+    if Span == 0 then Span = 1 end
+    local Decimals = MC(Props.Int and 0 or Props.Decimals or 0, 0, 6)
+    local Fmt, Mult = "%." .. Decimals .. "f", 10 ^ Decimals
+    local function Round(V) return MR(MC(V, Min, Max) * Mult) / Mult end
+
+    local Default = Round(Props.Default or Min)
+    local RailFrame = Host.Rail()
+    local ValText = Create("TextBox", RailFrame, { Text = Fmt:format(Default), Size = UFO(58, 18), LayoutOrder = 39,
+        TextColor3 = Theme.Accent, TextSize = L.TitleSize,
+        TextXAlignment = TXA.Right, ClearTextOnFocus = true })
+    local Track = Create("Frame", RailFrame, { Size = UFO(150, 6), LayoutOrder = 40, BackgroundColor3 = Theme.SliderTrack })
+    Decorate(Track, L.Corner6)
+    local Fill = Create("Frame", Track, { Size = UD2((Default - Min) / Span, 0, 1, 0), BackgroundColor3 = Theme.Accent })
+    Decorate(Fill, L.Corner6)
+    local GrabSize = 12
+    local function GrabPos(Frac) return UD2(Frac, (0.5 - Frac) * GrabSize, 0.5, 0) end
+    local Grab = Create("Frame", Track, { Size = UFO(GrabSize, GrabSize), AnchorPoint = V2(0.5, 0.5),
+        Position = GrabPos((Default - Min) / Span), BackgroundColor3 = ColorWhite, ZIndex = 2 })
+    Decorate(Grab, L.Pill, { Theme.Accent, 0.4, 1.5 })
+
+    local Current, Changed = Default, nil
+    local function Apply(V, Instant)
+        V = Round(V)
+        if Instant and V == Current then return end
+        Current = V
+        ValText.Text = Fmt:format(V)
+        local Frac = (V - Min) / Span
+        local Size, Pos = UD2(Frac, 0, 1, 0), GrabPos(Frac)
+        if Instant then
+            CancelMotors(Fill); CancelMotors(Grab)
+            Fill.Size, Grab.Position = Size, Pos
+        else
+            Tween(Fill, { Size = Size }, 0.1)
+            Tween(Grab, { Position = Pos }, 0.1)
+        end
+        Changed(V)
+    end
+
+    local H
+    H, Changed = Bind(Ctx, Props, FlagFor(Ctx, Props), function() return Current end, function(V) Apply(tonumber(V) or Current) end)
+    H.Instance = Track
+
+    ValText.Focused:Connect(function() Tween(ValText, { TextColor3 = Theme.Text }, 0.15) end)
+    ValText.FocusLost:Connect(function()
+        Tween(ValText, { TextColor3 = Theme.Accent }, 0.15)
+        local Num = tonumber((ValText.Text:gsub(",", ".")))
+        if Num then Apply(Num) else ValText.Text = Fmt:format(Current) end
+    end)
+
+    BindSlider(Track, Ctx.Page, function(Alpha) Apply(Min + Alpha.X * Span, true) end)
+    return H
+end)
+
+-------------------------------------------------------------------------- surface (the one popup panel)
+
+local Surface = { Views = {} }
+
+function Surface.Mount(Window)
+    if Surface.Window == Window and Surface.Portal.Parent then return end
+    local Gui = Window.Gui
+    local Catcher = Create("TextButton", Gui, { Size = UFS(1, 1), Visible = false, ZIndex = 198 })
+    Catcher.MouseButton1Click:Connect(function() Surface.Close() end)
+    local Portal = Create("TextButton", Gui, { Size = UFO(160, 100), Visible = false, ZIndex = 200 })
+    local Scale = Create("UIScale", Portal, { Scale = 1 })
+    DropShadow(Portal, 56, 0.5, 199)
+    local Panel = Create("Frame", Portal, { Size = UFS(1, 1), BackgroundColor3 = Theme.Sidebar, BackgroundTransparency = 0.02, ZIndex = 200 })
+    Decorate(Panel, L.Corner8, { Theme.WindowStroke, 0.35, 1.2 })
+    Surface.Window, Surface.Catcher, Surface.Portal, Surface.Scale, Surface.Panel = Window, Catcher, Portal, Scale, Panel
+    Surface.Owner, Surface.Views = nil, {}
+end
+
+function Surface.View(Kind, Build)
+    local View = Surface.Views[Kind]
+    if View then return View end
+    View = Build(Surface.Panel)
+    Surface.Views[Kind] = View
+    return View
+end
+
+function Surface.IsOpen(Owner) return Owner ~= nil and Surface.Owner == Owner end
+
+function Surface.Place()
+    local Owner, Window = Surface.Owner, Surface.Window
+    if not Owner then return end
+    local Sc = MX(Window.Scale.Scale, 0.01)
+    if Surface.Scale.Scale ~= Sc then
+        Surface.Scale.Scale = Sc
+        Owner.OnRescale()
+    end
+    local Height = Owner.Height()
+    local Gui, Anchor = Window.Gui, Surface.Anchor
+    local Origin, Abs, Size = Gui.AbsolutePosition, Anchor.AbsolutePosition, Anchor.AbsoluteSize
+    local Lx, Ly, VpY = Abs.X - Origin.X, Abs.Y - Origin.Y, Gui.AbsoluteSize.Y
+    local Below, Scaled = Ly + Size.Y + 6, Height * Sc
+    Surface.Portal.Size = UFO(Size.X / Sc, Height)
+    if Below + Scaled > VpY - 10 and Ly - Scaled - 6 > 10 then
+        Surface.Portal.Position = UFO(Lx, Ly - Scaled - 6)
+        return
+    end
+    Surface.Portal.Position = UFO(Lx, MM(Below, MX(10, VpY - Scaled - 10)))
+end
+
+function Surface.Open(Window, Owner, Anchor)
+    Surface.Mount(Window)
+    if Surface.Owner ~= Owner then Surface.Close() end
+    Surface.Owner, Surface.Anchor = Owner, Anchor
+    for Kind, View in Surface.Views do View.Frame.Visible = Kind == Owner.Kind end
+    Surface.Place()
+    Surface.Portal.Visible, Surface.Catcher.Visible = true, true
+    if Surface.Follow then Surface.Follow:Disconnect() end
+    Surface.Follow = Anchor:GetPropertyChangedSignal("AbsolutePosition"):Connect(Surface.Place)
+end
+
+function Surface.Close(Owner)
+    local Current = Surface.Owner
+    if not Current or (Owner and Owner ~= Current) then return end
+    Surface.Owner = nil
+    if Surface.Follow then Surface.Follow:Disconnect(); Surface.Follow = nil end
+    Surface.Portal.Visible, Surface.Catcher.Visible = false, false
+    Current.OnClose()
+end
+
+-------------------------------------------------------------------------- dropdown
+
+local DropView, Render, Refilter
+local DropMax, SearchH, DropRow, DropGap = 224, 36, 32, 4
+local DropStep = DropRow + DropGap
+do
+local DropSlots = math.ceil((DropMax - SearchH - 12) / DropStep) + 2
+local Floor = math.floor
+
+local function Slot(View, Si)
+    local B = Create("TextButton", View.List, { Size = UD2(1, 0, 0, DropRow),
+        BackgroundColor3 = Theme.DropdownOption, BackgroundTransparency = 0.15, TextSize = 13, TextColor3 = Theme.SubText,
+        TextXAlignment = TXA.Left, TextTruncate = ETT.AtEnd, ZIndex = 202 })
+    Decorate(B, L.Corner6, nil, { nil, nil, 14, 8 })
+    local Bar = Create("Frame", B, { Size = UD2(0, 3, 0, 0), Position = UD2(0, -9, 0.5, 0),
+        AnchorPoint = V2(0, 0.5), BackgroundColor3 = Theme.Accent, ZIndex = 203 })
+    Decorate(Bar, L.Pill)
+    Interactive(B, {
+        Over = { BackgroundTransparency = 0, TextColor3 = Theme.Text },
+        Out = function()
+            local O, Idx = Surface.Owner, View.Map[Si]
+            local Sel = O ~= nil and Idx ~= nil and O.IsSel(Idx)
+            return { BackgroundTransparency = Sel and 0 or 0.15, TextColor3 = Sel and Theme.Active or Theme.SubText }
+        end,
+        Time = 0.15,
+    })
+    B.MouseButton1Click:Connect(function()
+        local O, Idx = Surface.Owner, View.Map[Si]
+        if O and Idx then O.Pick(Idx) end
+    end)
+    View.Slots[Si], View.Bars[Si] = B, Bar
+    return B
+end
+
+--!mv:omit
+function Render(View)
+    local O = Surface.Owner
+    if not (O and O.Kind == "Dropdown") then return end
+    local List, Scroller = View.Filtered, View.List
+    local N = #List
+    local First = MC(Floor(Scroller.CanvasPosition.Y / (DropStep * MX(Surface.Scale.Scale, 0.01))) + 1, 1, MX(1, N - DropSlots + 1))
+    for Si = 1, DropSlots do
+        local Idx = First + Si - 1
+        local B = View.Slots[Si]
+        if Idx > N then
+            if B then B.Visible = false end
+            View.Map[Si] = nil
+            continue
+        end
+        B = B or Slot(View, Si)
+        local Opt = List[Idx]
+        local Sel = O.IsSel(Opt)
+        View.Map[Si] = Opt
+        B.Text = O.TextAt(Opt)
+        B.Position = UFO(0, (Idx - 1) * DropStep)
+        B.BackgroundTransparency = Sel and 0 or 0.15
+        B.TextColor3 = Sel and Theme.Active or Theme.SubText
+        View.Bars[Si].Size = UD2(0, 3, 0, Sel and 15 or 0)
+        B.Visible = true
+    end
+    Scroller.CanvasSize = UD2(0, 0, 0, N * DropStep)
+end
+
+function Refilter(View, Options)
+    local Q = View.Search.Text:lower():match("^%s*(.-)%s*$")
+    TCL(View.Filtered)
+    for I, Opt in Options do
+        if Q == "" or Opt:lower():find(Q, 1, true) then View.Filtered[#View.Filtered + 1] = I end
+    end
+    View.List.CanvasPosition = Vector2.zero
+    Render(View)
+end
+
+function DropView(Panel)
+    local Frame = Create("Frame", Panel, { Size = UFS(1, 1), BackgroundTransparency = 1, ZIndex = 200 })
+    local Search = Create("TextBox", Frame, { PlaceholderText = "Search...", Size = UD2(1, -16, 0, 28), Position = UFO(8, 6),
+        BackgroundColor3 = Theme.BindBackground, BackgroundTransparency = 0.35, PlaceholderColor3 = Theme.Placeholder, TextSize = 12, ZIndex = 201 })
+    Decorate(Search, L.Corner6, { Theme.Stroke, 0.7, 1 }, { nil, nil, 10, 10 })
+    local Scroller = Create("ScrollingFrame", Frame, { Size = UD2(1, -8, 1, -(12 + SearchH)), Position = UFO(4, 6 + SearchH),
+        BackgroundTransparency = 1, ZIndex = 201, AutomaticCanvasSize = AS.None })
+    Create("UIPadding", Scroller, { PaddingLeft = UD(0, 4), PaddingRight = UD(0, 6) })
+    local View = { Frame = Frame, Search = Search, List = Scroller, Slots = {}, Bars = {}, Map = {}, Filtered = {} }
+    Search:GetPropertyChangedSignal("Text"):Connect(function()
+        local O = Surface.Owner
+        if not (O and O.Kind == "Dropdown") then return end
+        O.Filter()
+        Surface.Place()
+    end)
+    Scroller:GetPropertyChangedSignal("CanvasPosition"):Connect(function() Render(View) end)
+    return View
+end
+end
+
+DefineControl("Dropdown", function(Ctx, Props, Host)
+    Expect(Props, "Name")
+    local Window, Row = Ctx.Window, Host.Instance
+    local Multi = Props.Multi
+    local Chosen, Options = {}, {}
+    local Default = Props.Default
+    if Default == nil and not Multi and Props.Options then Default = Props.Options[1] end
+    if type(Default) == "table" then
+        for _, V in Default do Chosen[tostring(V)] = true end
+    elseif Default ~= nil then
+        Chosen[tostring(Default)] = true
+    end
+
+    local Opener = Create("TextButton", Host.Rail(), { Size = UFO(164, 22), LayoutOrder = 50 })
+    local Header = RowHit(Row)
+    local ValLbl = Create("TextLabel", Opener, { Size = UD2(1, -20, 1, 0), TextColor3 = Theme.SubText,
+        TextXAlignment = TXA.Right, TextTruncate = ETT.AtEnd })
+    local Chev = Create("ImageLabel", Opener, { Size = UFO(14, 14), AnchorPoint = V2(1, 0.5),
+        Position = UD2(1, 0, 0.5, 0), ImageColor3 = Theme.SubText })
+    ApplyIcon(Chev, "chevron-down")
+
+    local Me, View, Changed = { Kind = "Dropdown" }, nil, nil
+
+    local function Values()
+        local Out, Seen = {}, {}
+        for _, Opt in Options do
+            if Chosen[Opt] then Out[#Out + 1] = Opt; Seen[Opt] = true end
+        end
+        local Tail = {}
+        for K in Chosen do
+            if not Seen[K] then Tail[#Tail + 1] = K end
+        end
+        table.sort(Tail)
+        table.move(Tail, 1, #Tail, #Out + 1, Out)
+        return Out
+    end
+    local function Get()
+        local Vals = Values()
+        return Multi and Vals or (Vals[1] or "")
+    end
+    local function Display()
+        local Vals = Values()
+        ValLbl.Text = #Vals > 0 and table.concat(Vals, ", ") or "None"
+        if Surface.IsOpen(Me) then Render(View) end
+    end
+
+    local function Refresh()
+        local Src = Props.Populate and Props.Populate() or Props.Options or {}
+        TCL(Options)
+        for I, V in Src do Options[I] = tostring(V) end
+        Display()
+        if not Surface.IsOpen(Me) then return end
+        Refilter(View, Options)
+        Surface.Place()
+    end
+    Refresh()
+
+    local function Select(Opt)
+        local K = tostring(Opt)
+        if Multi then Chosen[K] = (not Chosen[K]) or nil else TCL(Chosen); Chosen[K] = true end
+        Display()
+        if not Multi then Surface.Close(Me) end
+        Changed(Get())
+    end
+
+    local function SetValue(V)
+        TCL(Chosen)
+        if type(V) == "table" then
+            for _, X in V do Chosen[tostring(X)] = true end
+        elseif V ~= nil and V ~= "" then
+            Chosen[tostring(V)] = true
+        end
+        Display()
+        Changed(Get())
+    end
+
+    function Me.Height() return MC(#View.Filtered * DropStep + 14 + SearchH, 44 + SearchH, DropMax) end
+    function Me.OnRescale() Render(View) end
+    function Me.OnClose() Tween(Chev, { Rotation = 0 }, 0.18) end
+    function Me.IsSel(I) return Chosen[Options[I]] == true end
+    function Me.TextAt(I) return Options[I] or "" end
+    function Me.Pick(I) if Options[I] then Select(Options[I]) end end
+    function Me.Filter() Refilter(View, Options) end
+
+    local function Open()
+        if Surface.IsOpen(Me) then Surface.Close(Me); return end
+        Surface.Mount(Window)
+        View = Surface.View("Dropdown", DropView)
+        Surface.Open(Window, Me, Row)
+        View.Search.Text = ""
+        Refresh()
+        Tween(Chev, { Rotation = 180 }, 0.18)
+    end
+
+    local H
+    H, Changed = Bind(Ctx, Props, FlagFor(Ctx, Props), Get, SetValue)
+    H.Instance = Opener
+    function H.Refresh() Refresh() end
+    function H.SetOptions(List) Props.Options = TC(List); Refresh() end
+
+    Row.Destroying:Connect(function() Surface.Close(Me) end)
+    Opener.MouseButton1Click:Connect(Open)
+    Header.MouseButton1Click:Connect(Open)
+    return H
+end)
+
+-------------------------------------------------------------------------- input
+
+DefineControl("Input", function(Ctx, Props, Host)
+    Expect(Props, "Name")
+    local Numeric = Props.Numeric
+    local Value = Props.Default
+    if Numeric then Value = tonumber(Value) or 0 else Value = Value ~= nil and tostring(Value) or "" end
+
+    local Field = Create("Frame", Host.Rail(), { Size = UFO(Props.Width or 180, 26), LayoutOrder = 45,
+        BackgroundColor3 = Theme.BindBackground, BackgroundTransparency = 0.5 })
+    local _, Stroke = Decorate(Field, L.Corner6, { Theme.Stroke, 0.7, 1 })
+    local Box = Create("TextBox", Field, { Text = tostring(Value), PlaceholderText = Props.Placeholder or "",
+        PlaceholderColor3 = Theme.Placeholder, TextColor3 = Theme.Text, TextSize = 13, ClearTextOnFocus = Props.ClearOnFocus == true,
+        TextXAlignment = TXA.Left, TextTruncate = ETT.AtEnd, ClipsDescendants = true,
+        Size = UD2(1, -20, 1, 0), Position = UFO(10, 0) })
+
+    local Changed
+    local function Set(V)
+        if Numeric then
+            local N = tonumber(V)
+            if not N then Box.Text = tostring(Value); return end
+            V = N
+        else
+            V = V ~= nil and tostring(V) or ""
+        end
+        Value = V
+        Box.Text = tostring(V)
+        Changed(V)
+    end
+
+    local H
+    H, Changed = Bind(Ctx, Props, FlagFor(Ctx, Props), function() return Value end, Set)
+    H.Instance = Box
+
+    Box.Focused:Connect(function() Tween(Stroke, { Color = Theme.Accent, Transparency = 0.2 }, 0.15) end)
+    Box.FocusLost:Connect(function()
+        Tween(Stroke, { Color = Theme.Stroke, Transparency = 0.7 }, 0.15)
+        if Box.Text ~= tostring(Value) then Set(Box.Text) end
+    end)
+    return H
+end)
+
+-------------------------------------------------------------------------- section
+
+function Container:AddSection(Title, StartClosed)
+    if self.IsSection then error("SummitX: sections do not nest -- put these widgets on the tab, or in one section", 2) end
+    if type(Title) == "table" then Title, StartClosed = Title.Name, Title.Closed end
+    local Window = self.Window
+    local Open = not StartClosed
+    local Box = Stack("Box", self.Parent, Window.Scale, { BackgroundColor3 = Theme.Sidebar, BackgroundTransparency = 0.45 }, 12, { 12, 14, 12, 12 })
+    Decorate(Box, L.Corner8, { Theme.Stroke, 0.6, 1 })
+    local Head = Create("TextButton", Box, { Size = UD2(1, 0, 0, 22), LayoutOrder = 0 })
+    local Chev = Create("ImageLabel", Head, { Size = UFO(13, 13), Position = UD2(0, 4, 0.5, -6),
+        ImageColor3 = Theme.SubText, Rotation = Open and 0 or -90 })
+    ApplyIcon(Chev, "chevron-down")
+    local Lbl = Create("TextLabel", Head, { Text = tostring(Title):upper(), Size = UD2(1, -30, 1, 0), Position = UD2(0, 24, 0, 0),
+        TextColor3 = Theme.SubText, TextSize = 13, TextXAlignment = TXA.Left,
+        TextTruncate = ETT.AtEnd })
+    local Body = Stack("Box", Box, Window.Scale, { BackgroundTransparency = 1, Visible = Open, LayoutOrder = 1 }, 8)
+
+    local function SetOpen(V)
+        Open = not not V
+        Body.Visible = Open
+        if not Open then Surface.Close() end
+        Tween(Chev, { Rotation = Open and 0 or -90 }, 0.15)
+    end
+    Head.MouseButton1Click:Connect(function() SetOpen(not Open) end)
+    Interactive(Head, { Target = Lbl, Over = { TextColor3 = Theme.Text }, Out = { TextColor3 = Theme.SubText }, Time = 0.12 })
+
+    local Sub = NewContainer(Window, Body, self.TabName, self.Page)
+    Sub.Instance, Sub.IsSection = Box, true
+    Sub.SetOpen = SetOpen
+    return Sub
+end
+
+--=====================================================================================
+--  13. Window
+--=====================================================================================
+
+local WindowClass = {}
+WindowClass.__index = WindowClass
+
+
+local function LauncherAsset()
+    if not (Env.CustomAsset and Env.CanSave) then return nil end
+    local File = Private.Folder .. "/launcher_v1.png"
+    if not Env.ReadFile(File) then
+        local Data = Env.HttpGet("https://raw.githubusercontent.com/04Jordn/SUMMIT/main/SX%20Icon.png")
+        if type(Data) ~= "string" or Data:sub(2, 4) ~= "PNG" then return nil end
+        if not Env.WriteFile(File, Data) then return nil end
+    end
+    local Ok, Id = pcall(Env.CustomAsset, File)
+    return Ok and type(Id) == "string" and Id or nil
+end
+
+function Library:CreateWindow(Opts)
+    if type(Opts) ~= "table" then Opts = { Title = Opts } end
+    if self.Window then self.Window:Destroy() end
+    if Opts.Mobile ~= nil then SetMobile(Opts.Mobile) end
+    if type(Opts.Folder) == "string" and Opts.Folder ~= "" then Private.Folder = Opts.Folder end
+    Private.Title = tostring(Opts.Title or "SummitX")
+    Private.RestoreTheme()
+
+    local ConfigPath = Opts.ConfigFile
+    if ConfigPath == nil and Opts.Config ~= false then
+        ConfigPath = ("%s/configs/%s.json"):format(Private.Folder, tostring(Opts.Config or game.GameId))
+    end
+
+    local Window = setmetatable({
+        Title = Private.Title, Scope = NewScope(), Store = StoreClass.new(ConfigPath or nil),
+        Tabs = {}, TabsByName = {}, Warm = {}, Popup = nil, Drop = nil, Active = nil,
+        Actions = { Slots = {}, List = {}, Shown = { Toggle = false, Action = false }, Locked = false },
+        Open = true, LauncherOn = IsMobile, Maximized = false, MovedWhileMax = false,
+    }, WindowClass)
+    self.Window = Window
+    Lifetime.Add(Window.Scope.Clean)
+    Window.Scope.Add(function() Surface.Close() end)
+    Window.Scope.Add(function() if Window.WarmConn then Window.WarmConn:Disconnect(); Window.WarmConn = nil end end)
+
+    Window:BuildFrame(Opts)
+    Window:BuildTopbar(Opts)
+    Window:BuildSidebar()
+    Window:BuildLauncher()
+    Window:WatchViewport()
+    if not IsMobile then
+        Window.MenuBind = NewBind(Opts.Keybind or "RightShift", function() Window:Toggle() end, false)
+        Window.Scope.Add(function() DropBind(Window.MenuBind) end)
+    end
+
+    TDF(function()
+        local Root, Gui = Window.Root, Window.Gui
+        if Root.Parent or not Gui.Parent then return end
+        Root.Parent = Gui
+        Window.QueueRefit()
+        for _ = 1, 4 do
+            if Gui.AbsoluteSize.X >= 64 and Root.AbsoluteSize.X > 0 then break end
+            RunService.Heartbeat:Wait()
+        end
+        if not (Root.Parent and Gui.Parent) then return end
+        Window:Refit()
+        Root.Visible = true
+    end)
+    SetCursor(true)
+    Window.Scope.Add(function() SetCursor(false) end)
+    return Window
+end
+
+function WindowClass:BuildFrame(Opts)
+    local Scope = self.Scope
+    local Gui = Mount(9999, Scope)
+    local W, H = IsMobile and 560 or 880, IsMobile and 330 or 520
+    self.SidebarW = IsMobile and 150 or 170
+    self.DesiredSize = UFO(W, H)
+
+    local Root = Create("Frame", nil, { Size = self.DesiredSize, AnchorPoint = V2(0.5, 0.5), Position = UFS(0.5, 0.5),
+        BackgroundTransparency = 1, Active = true, Visible = false, ZIndex = 160 })
+    local Scale = Create("UIScale", Root, { Scale = L.ScaleBase })
+    local Shadow = DropShadow(Root, 120, 0.62, 0)
+    local Main, MainStroke = GlassCard(Root, { Size = UFS(1, 1), Active = true, ZIndex = 1 })
+
+    local Ghost = Create("Frame", Root, { Size = UFS(1, 1), BackgroundColor3 = ColorBlack, BackgroundTransparency = 1,
+        Visible = false, ZIndex = 2 })
+    local _, GhostStroke = Decorate(Ghost, L.Corner12, { ColorWhite, 1, 1.5 })
+    local GhostText = Create("TextLabel", Ghost, { Text = (tostring(Opts.Discord or ""):gsub("^%w+://", "")):upper(),
+        Rotation = -20, AnchorPoint = V2(0.5, 0.5), Position = UFS(0.5, 0.5), Size = UFS(0.88, 0.26),
+        TextColor3 = ColorWhite, TextTransparency = 1, TextScaled = true })
+
+    self.Gui, self.Root, self.Scale, self.Main = Gui, Root, Scale, Main
+    self.Fader = FaderClass.new(Root, { [Ghost] = true }, { [Root] = true, [Shadow] = true, [Main] = true, [MainStroke] = true }, ResetInteractives)
+
+    local DragFade, DragGen = 0.15, 0
+    self.DragGhost = function(Moving)
+        DragGen += 1
+        local Gen = DragGen
+        if Moving then
+            self.Fader:Out(DragFade)
+            Ghost.Visible = true
+            Tween(Ghost, { BackgroundTransparency = 0.45 }, DragFade)
+            Tween(GhostStroke, { Transparency = 0.7 }, DragFade)
+            Tween(GhostText, { TextTransparency = 0.1 }, DragFade)
+            TDL(DragFade + 0.02, function() if Gen == DragGen then Main.Visible = false end end)
+        else
+            Main.Visible = true
+            self.Fader:In(DragFade)
+            Tween(GhostStroke, { Transparency = 1 }, DragFade)
+            Tween(GhostText, { TextTransparency = 1 }, DragFade)
+            Tween(Ghost, { BackgroundTransparency = 1 }, DragFade, nil, function()
+                if Gen == DragGen then Ghost.Visible = false end
+            end)
+        end
+    end
+    self.NoteDrag = function() if self.Maximized then self.MovedWhileMax = true end end
+
+    local Grip = Create("TextButton", Main, { Size = UFO(18, 18), Position = UD2(1, -18, 1, -18), ZIndex = 7 })
+    for _, D in { { 10, 2 }, { 6, 6 }, { 10, 6 }, { 2, 10 }, { 6, 10 }, { 10, 10 } } do
+        Create("Frame", Grip, { Size = UFO(2, 2), Position = UFO(D[1], D[2]), BackgroundColor3 = Theme.Stroke,
+            BackgroundTransparency = 0.2, ZIndex = 7 })
+    end
+    Grip.InputBegan:Connect(function(Input)
+        if not IsPress(Input.UserInputType) then return end
+        self.Maximized, self.SavedPos, self.MovedWhileMax = false, nil, false
+        ApplyIcon(self.MaxIcon, "maximize-2")
+        Surface.Close()
+        local Start, Size0, Pos0 = Input.Position, Root.Size, Root.Position
+        BeginDrag(function(I)
+            local Sc = MX(Scale.Scale, 0.01)
+            local Want = self:ClampSize(UFO(Size0.X.Offset + (I.Position.X - Start.X) / Sc,
+                Size0.Y.Offset + (I.Position.Y - Start.Y) / Sc), Gui.AbsoluteSize, Sc)
+            Root.Size, self.DesiredSize = Want, Want
+            Root.Position = UD2(Pos0.X.Scale, Pos0.X.Offset + (Want.X.Offset - Size0.X.Offset) * Sc / 2,
+                Pos0.Y.Scale, Pos0.Y.Offset + (Want.Y.Offset - Size0.Y.Offset) * Sc / 2)
+        end)
+    end)
+end
+
+function WindowClass:BuildTopbar(Opts)
+    local Main, SidebarW = self.Main, self.SidebarW
+    local Topbar = Create("Frame", Main, { Size = UD2(1, 0, 0, L.TopbarH), BackgroundColor3 = Theme.Sidebar, Active = true, ZIndex = 5 })
+    Decorate(Topbar, L.Corner12)
+    Create("Frame", Topbar, { Size = UD2(1, 0, 0, 14), Position = UD2(0, 0, 1, -14), BackgroundColor3 = Theme.Sidebar, ZIndex = 5 })
+    Create("Frame", Topbar, { Size = UD2(1, 0, 0, 1), Position = UD2(0, 0, 1, -1), BackgroundColor3 = Theme.Stroke,
+        BackgroundTransparency = 0.35, ZIndex = 6 })
+
+    local Nudge = 12
+    Create("UIStroke", Create("TextLabel", Topbar, { Text = self.Title, Size = UD2(0, SidebarW, 1, 0), Position = UD2(0, -Nudge, 0, 0),
+        TextColor3 = Theme.Accent, FontFace = L.HubFont, TextSize = L.HubSize, TextXAlignment = TXA.Center,
+        TextTruncate = ETT.AtEnd, ZIndex = 6 }),
+        { Color = Theme.Stroke, Thickness = L.HubEdge, ApplyStrokeMode = ASM.Contextual })
+
+    local ChipX = SidebarW + 22 - Nudge
+    local Chips = Create("Frame", Topbar, { Size = UD2(1, -(ChipX + 108), 1, 0), Position = UD2(0, ChipX, 0, 0),
+        BackgroundTransparency = 1, ZIndex = 6 })
+    ListLayout(Chips, 8, true)
+    local function Chip(Text, Accent, Order)
+        local C = Create("TextLabel", Chips, { Text = Text, AutomaticSize = AS.X, Size = UD2(0, 0, 0, L.ChipH),
+            BackgroundColor3 = Accent and Theme.Chip or Theme.Section, BackgroundTransparency = Accent and 0.15 or 0.3,
+            TextColor3 = Accent and Theme.Active or Theme.SubText, TextSize = 11, LayoutOrder = Order, ZIndex = 6 })
+        Decorate(C, L.Corner6, { Accent and Theme.Accent or Theme.Stroke, Accent and 0.45 or 0.6, 1 }, { nil, nil, 10, 10 })
+        return C
+    end
+    local GameChip = Chip("...", true, 1)
+    TSP(function()
+        local Ok, Info = pcall(MarketplaceService.GetProductInfo, MarketplaceService, game.PlaceId)
+        if GameChip.Parent then GameChip.Text = (Ok and type(Info) == "table" and Info.Name or "ROBLOX"):upper() end
+    end)
+    if Opts.Version and Opts.Version ~= "" then Chip(tostring(Opts.Version), false, 2) end
+
+    local function WindowButton(Icon, X, Tint, OnClick)
+        local Size = IsMobile and 36 or 28
+        local Btn, _, Glyph = Button("Icon", Topbar, { Size = UFO(Size, Size), AnchorPoint = V2(1, 0.5),
+            Position = UD2(1, X, 0.5, 0), BackgroundColor3 = Tint, ZIndex = 7 }, Icon)
+        Btn.MouseButton1Click:Connect(OnClick)
+        return Glyph
+    end
+    WindowButton("x", -10, RGB(192, 102, 110), function() Library:Destroy() end)
+    self.MaxIcon = WindowButton("maximize-2", -44, Theme.Close, function() self:SetMaximized(not self.Maximized) end)
+    WindowButton("minus", -78, Theme.Close, function() self:SetOpen(false) end)
+
+    MakeDraggable(Topbar, self.Root, self.NoteDrag, self.DragGhost)
+end
+
+function WindowClass:BuildSidebar()
+    local Main, SidebarW = self.Main, self.SidebarW
+    local Sidebar = Create("Frame", Main, { Size = UD2(0, SidebarW, 1, -L.TopbarH), Position = UD2(0, 0, 0, L.TopbarH),
+        BackgroundColor3 = Theme.Sidebar, Active = true, ZIndex = 2 })
+    Decorate(Sidebar, L.Corner12)
+    Create("Frame", Sidebar, { Size = UD2(1, 0, 0, 14), BackgroundColor3 = Theme.Sidebar, ZIndex = 2 })
+    Create("Frame", Main, { Size = UD2(0, 1, 1, -(L.TopbarH + 14)), Position = UD2(0, SidebarW, 0, L.TopbarH),
+        BackgroundColor3 = Theme.Stroke, BackgroundTransparency = 0.5, ZIndex = 3 })
+
+    local Scroller = Create("ScrollingFrame", Sidebar, { Size = UD2(1, 0, 1, -94), Position = UD2(0, 0, 0, 12),
+        BackgroundTransparency = 1, ZIndex = 3, ScrollBarThickness = 0 })
+    local TabList = Create("Frame", Scroller, { Size = UD2(1, 0, 0, 0), AutomaticSize = AS.Y, BackgroundTransparency = 1, ZIndex = 3 })
+    ListLayout(TabList, L.TabGap, false, HFA.Center)
+    local Selector = Create("Frame", Scroller, { Size = UD2(0, 3, 0, 0), Position = UD2(0, 6, 0, 19), AnchorPoint = V2(0, 0.5),
+        BackgroundColor3 = Theme.Active, ZIndex = 4 })
+    Decorate(Selector, L.Pill)
+
+    local Divider = Create("Frame", Sidebar, { Size = UD2(1, -32, 0, 1), Position = UD2(0, 16, 1, -76), BackgroundColor3 = Theme.Stroke,
+        BackgroundTransparency = 0.25, ZIndex = 3 })
+    local Profile = Create("Frame", Sidebar, { Size = UD2(1, -28, 0, 48), Position = UD2(0, 14, 1, -62), BackgroundTransparency = 1, ZIndex = 3 })
+    local Avatar = Create("ImageLabel", Profile, { Size = UFO(44, 44), Position = UD2(0, 0, 0.5, -22), BackgroundColor3 = Theme.Section,
+        BackgroundTransparency = 0.2, ZIndex = 3 })
+    Decorate(Avatar, L.Pill, { Theme.Accent, 0.3, 1 })
+    TSP(function()
+        local Ok, Img = pcall(Players.GetUserThumbnailAsync, Players, LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+        if Ok and Avatar.Parent then Avatar.Image = Img end
+    end)
+    local Names = Create("Frame", Profile, { Size = UD2(1, -56, 1, 0), Position = UD2(0, 56, 0, 0), BackgroundTransparency = 1, ZIndex = 3 })
+    ListLayout(Names, 2)
+    Create("UIPadding", Names, { PaddingTop = UD(0, 6), PaddingBottom = UD(0, 6) })
+    Create("TextLabel", Names, { Text = LocalPlayer.DisplayName ~= "" and LocalPlayer.DisplayName or LocalPlayer.Name, Size = UD2(1, 0, 0, 18),
+        TextColor3 = Theme.Text, TextSize = 15, TextXAlignment = TXA.Left,
+        TextTruncate = ETT.AtEnd, LayoutOrder = 1, ZIndex = 3 })
+    Create("TextLabel", Names, { Text = "@" .. LocalPlayer.Name, Size = UD2(1, 0, 0, 15), TextColor3 = Theme.Desc, TextSize = 12,
+        TextXAlignment = TXA.Left, TextTruncate = ETT.AtEnd, LayoutOrder = 2, ZIndex = 3 })
+
+    local Glow = Create("Frame", Main, { Size = UD2(1, -SidebarW, 0, 200), Position = UD2(0, SidebarW, 0, L.TopbarH),
+        BackgroundColor3 = Theme.Accent, ZIndex = 0 })
+    Create("UIGradient", Glow, { Rotation = 90, Transparency = NumberSequence.new({
+        NSK(0, 0.8), NSK(0.35, 0.9), NSK(1, 1) }) })
+
+    local Content = Create("Frame", Main, { Size = UD2(1, -(SidebarW + 20), 1, -(L.TopbarH + 18)),
+        Position = UD2(0, SidebarW + 10, 0, L.TopbarH + 8), BackgroundTransparency = 1 })
+    self.HeadTitle = Create("TextLabel", Content, { Size = UD2(1, -12, 0, 24), Position = UD2(0, 12, 0, 2), TextColor3 = Theme.Text,
+        TextSize = 19, TextXAlignment = TXA.Left, TextTruncate = ETT.AtEnd })
+    self.HeadSub = Create("TextLabel", Content, { Size = UD2(1, -12, 0, 14), Position = UD2(0, 12, 0, 27), TextColor3 = Theme.SubText,
+        TextSize = 12, TextXAlignment = TXA.Left, TextTruncate = ETT.AtEnd })
+    self.PageHost = Create("Frame", Content, { Size = UD2(1, 0, 1, -L.PageTop), Position = UD2(0, 0, 0, L.PageTop),
+        BackgroundTransparency = 1, ClipsDescendants = true })
+
+    self.TabList, self.Selector, self.Profile, self.ProfileDivider = TabList, Selector, Profile, Divider
+    MakeDraggable(Sidebar, self.Root, self.NoteDrag, self.DragGhost)
+end
+
+function WindowClass:BuildLauncher()
+    local Gui = self.Gui
+    local Fab = Create("Frame", Gui, { Size = UFO(46, 46), AnchorPoint = V2(0.5, 0), Position = UD2(0.5, 0, 0, 16),
+        BackgroundTransparency = 1, Active = true, ZIndex = 100, Visible = false })
+    local FabScale = Create("UIScale", Fab, { Scale = 0 })
+    DropShadow(Fab, 26, 0.72, 99)
+    local FaceAlpha = 0.42
+    local Face = Create("TextButton", Fab, { Size = UFS(1, 1), AnchorPoint = V2(0.5, 0.5), Position = UFS(0.5, 0.5),
+        BackgroundColor3 = Theme.Active, BackgroundTransparency = FaceAlpha, ZIndex = 100 })
+    local Hover = Create("UIScale", Face, { Scale = 1 })
+    Decorate(Face, UD(0, 18), { Theme.ToggleBorder, 0.35, 2 })
+    local Mark = Create("ImageLabel", Face, { Size = UFS(0.62, 0.62), AnchorPoint = V2(0.5, 0.5), Position = UFS(0.5, 0.5),
+        ScaleType = SCL.Fit, ZIndex = 102 })
+    Interactive(Face, { Over = { BackgroundTransparency = FaceAlpha - 0.22, BackgroundColor3 = Theme.Accent },
+        Out = { BackgroundTransparency = FaceAlpha, BackgroundColor3 = Theme.Active }, Time = 0.14 })
+    Interactive(Face, { Target = Hover, Over = { Scale = 1.09 }, Out = { Scale = 1 }, Time = 0.16 })
+    DragFree(Face, Fab, Gui, function() self:SetOpen(true) end)
+    self.Fab, self.FabScale = Fab, FabScale
+
+    TSP(function()
+        local Id = LauncherAsset()
+        if not Mark.Parent then return end
+        if Id then Mark.Image = Id; return end
+        Create("TextLabel", Face, { Text = "SX", Size = UFS(1, 1), TextSize = 18, TextColor3 = ColorWhite, ZIndex = 102 })
+    end)
+end
+
+function WindowClass:WatchViewport()
+    local Gui, Conn, UntilT, Last = self.Gui, nil, 0, self.Gui.AbsoluteSize
+    local function Watch()
+        if not Gui.Parent or OC() > UntilT then Conn:Disconnect(); Conn = nil; return end
+        local Vp = Gui.AbsoluteSize
+        if Vp ~= Last then Last = Vp; self:Refit() end
+    end
+    local function Queue()
+        UntilT = OC() + 0.5
+        if not Conn then Conn = RunService.Heartbeat:Connect(Watch) end
+    end
+    self.QueueRefit = Queue
+    self.Scope.Add(Gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(Queue))
+    local Cam = workspace.CurrentCamera
+    if Cam then self.Scope.Add(Cam:GetPropertyChangedSignal("ViewportSize"):Connect(Queue)) end
+    self.Scope.Add(function() if Conn then Conn:Disconnect(); Conn = nil end end)
+    Queue()
+end
+
+-------------------------------------------------------------------------- window state
+
+function WindowClass:ClampSize(Size, Vp, Sc)
+    local MaxW, MaxH = MX(160, Vp.X / Sc), MX(160, Vp.Y / Sc)
+    return UFO(MC(Size.X.Offset, MM(L.MinW, MaxW), MaxW), MC(Size.Y.Offset, MM(L.MinH, MaxH), MaxH))
+end
+
+function WindowClass:Refit()
+    local Root, Gui = self.Root, self.Gui
+    if not Root.Parent then return end
+    local Vp, Sc = Gui.AbsoluteSize, MX(self.Scale.Scale, 0.01)
+    if Vp.X < 64 or Vp.Y < 64 then
+        local Cam = workspace.CurrentCamera
+        Vp = Cam and Cam.ViewportSize or Vp
+    end
+    if Vp.X < 64 or Vp.Y < 64 then return end
+    Surface.Close()
+    if self.Maximized then
+        CancelMotors(Root)
+        Root.Size = UFO((Vp.X - 20) / Sc, (Vp.Y - 20) / Sc)
+        Root.Position = UFS(0.5, 0.5)
+        return
+    end
+    local Want = self:ClampSize(self.DesiredSize, Vp, Sc)
+    if Want ~= Root.Size then CancelMotors(Root); Root.Size = Want end
+    local W = Root.AbsoluteSize.X
+    local Tl = Root.AbsolutePosition - Gui.AbsolutePosition
+    local Nx = MC(Tl.X, 100 - W, MX(100 - W, Vp.X - 100))
+    local Ny = MC(Tl.Y, 0, MX(0, Vp.Y - 44))
+    if Nx ~= Tl.X or Ny ~= Tl.Y then SetTopLeft(Root, Vp, Nx, Ny) end
+end
+
+function WindowClass:SetMaximized(On)
+    On = not not On
+    if On == self.Maximized then return end
+    self.Maximized = On
+    local Root, Vp, Sc = self.Root, self.Gui.AbsoluteSize, MX(self.Scale.Scale, 0.01)
+    if On then
+        self.SavedPos = Root.Position
+        Tween(Root, { Size = UFO((Vp.X - 20) / Sc, (Vp.Y - 20) / Sc), Position = UFS(0.5, 0.5) }, 0.3)
+    else
+        Tween(Root, { Size = self:ClampSize(self.DesiredSize, Vp, Sc),
+            Position = self.MovedWhileMax and Root.Position or self.SavedPos or UFS(0.5, 0.5) }, 0.3)
+    end
+    self.MovedWhileMax = false
+    ApplyIcon(self.MaxIcon, On and "minimize-2" or "maximize-2")
+end
+
+function WindowClass:SetScale(Value)
+    self.Scale.Scale = (tonumber(Value) or 1) * L.ScaleBase
+    self:Refit()
+end
+
+function WindowClass:RefreshLauncher()
+    local Fab, Wanted = self.Fab, self.LauncherOn and not self.Open
+    if Wanted then
+        Fab.Visible = true
+        Tween(self.FabScale, { Scale = 1 }, 0.32, 0.62)
+    else
+        Tween(self.FabScale, { Scale = 0 }, 0.18, 1, function()
+            if not (self.LauncherOn and not self.Open) then Fab.Visible = false end
+        end)
+    end
+end
+
+function WindowClass:SetLauncher(On)
+    self.LauncherOn = not not On
+    self:RefreshLauncher()
+end
+
+function WindowClass:SetOpen(Open)
+    Open = not not Open
+    if Open == self.Open then return end
+    self.Open = Open
+    if not Open then Surface.Close() end
+    SetCursor(Open)
+    self.Fader:Show(Open)
+    self:RefreshLauncher()
+end
+
+function WindowClass:IsOpen() return self.Open end
+function WindowClass:Toggle() self:SetOpen(not self.Open) end
+
+function WindowClass:SetProfileVisible(On)
+    self.Profile.Visible = On
+    self.ProfileDivider.Visible = On
+end
+
+function WindowClass:Notify(Cfg) return Library:Notify(Cfg) end
+
+function WindowClass:Destroy()
+    self.Scope.Clean()
+    if Library.Window == self then Library.Window = nil end
+end
+
+-------------------------------------------------------------------------- tabs
+
+function WindowClass:AddTab(Opts, Subtitle, Icon)
+    if type(Opts) ~= "table" then Opts = { Name = Opts, Subtitle = Subtitle, Icon = Icon } end
+    local Name = tostring(Opts.Name or ("Tab " .. (#self.Tabs + 1)))
+    local Index = #self.Tabs + 1
+
+    local Btn = Create("TextButton", self.TabList, { Size = UD2(1, -24, 0, L.TabH), BackgroundColor3 = Theme.Accent,
+        BackgroundTransparency = 1, ZIndex = 3, LayoutOrder = Index })
+    Decorate(Btn, L.Corner8)
+    local Img = Create("ImageLabel", Btn, { Size = UFO(17, 17), Position = UD2(0, 16, 0.5, -8), ImageColor3 = Theme.TabText, ZIndex = 4 })
+    ApplyIcon(Img, Opts.Icon or TabIcons[Name] or "circle")
+    local Lbl = Create("TextLabel", Btn, { Text = Name, Size = UD2(1, -48, 1, 0), Position = UD2(0, 40, 0, 0), TextColor3 = Theme.TabText,
+        TextSize = L.TitleSize, TextXAlignment = TXA.Left, TextTruncate = ETT.AtEnd, ZIndex = 4 })
+
+    local Page = Stack("Page", self.PageHost, self.Scale, { Size = UFS(1, 1), BackgroundTransparency = 1, Visible = false,
+        AutomaticCanvasSize = AS.None }, 12, { 4, 8, 12, 12 }, HFA.Center)
+
+    local Tab = NewContainer(self, Page, Name, Page)
+    Tab.Name, Tab.Subtitle, Tab.Index, Tab.Button = Name, Opts.Subtitle or "", Index, Btn
+    Tab.SelY = (Index - 1) * (L.TabH + L.TabGap) + L.TabH / 2
+    function Tab.Select() self:SelectTab(Tab) end
+    function Tab.SetActive(On, Instant)
+        Page.Visible = On
+        local Props = { BackgroundTransparency = On and 0.85 or 1 }
+        local Text, Icon = { TextColor3 = On and Theme.Text or Theme.TabText }, { ImageColor3 = On and Theme.Accent or Theme.TabText }
+        if Instant then
+            Btn.BackgroundTransparency, Lbl.TextColor3, Img.ImageColor3 = Props.BackgroundTransparency, Text.TextColor3, Icon.ImageColor3
+        else
+            Tween(Btn, Props, 0.18); Tween(Lbl, Text, 0.18); Tween(Img, Icon, 0.18)
+        end
+    end
+    self.Tabs[Index], self.TabsByName[Name] = Tab, Tab
+
+    Btn.MouseButton1Click:Connect(Tab.Select)
+    Interactive(Btn, { Over = { BackgroundTransparency = 0.93 }, Out = { BackgroundTransparency = 1 }, Time = 0.15,
+        Enabled = function() return not Page.Visible end })
+
+    Tab.Pending = Opts.Build
+    if not self.Active then
+        self.Active = Tab
+        Tab.SetActive(true, true)
+        self.HeadTitle.Text, self.HeadSub.Text = Name, Tab.Subtitle
+        self.Selector.Position, self.Selector.Size = UD2(0, 6, 0, Tab.SelY), UD2(0, 3, 0, 20)
+        self:BuildPending(Tab)
+    elseif Tab.Pending then
+        self:QueueWarm(Tab)
+    end
+    return Tab
+end
+
+function WindowClass:GetTab(Which)
+    if type(Which) == "table" then return Which end
+    return self.TabsByName[Which] or self.Tabs[Which]
+end
+
+function WindowClass:SelectTab(Which)
+    local Tab = self:GetTab(Which)
+    if not Tab or Tab == self.Active then return Tab end
+    self:BuildPending(Tab)
+    Surface.Close()
+    if self.Active then self.Active.SetActive(false) end
+    self.Active = Tab
+    Tab.SetActive(true)
+    self.HeadTitle.Text, self.HeadSub.Text = Tab.Name, Tab.Subtitle
+    Tween(self.Selector, { Position = UD2(0, 6, 0, Tab.SelY) }, 0.28)
+    return Tab
+end
+
+function WindowClass:BuildPending(Tab)
+    local Build = Tab.Pending
+    if not Build then return end
+    Tab.Pending = nil
+    local Ok, Err = xpcall(Build, debug.traceback, Tab, self)
+    if not Ok then Warn("tab %q failed to build:\n%s", Tab.Name, tostring(Err)) end
+end
+
+function WindowClass:QueueWarm(Tab)
+    local Queue = self.Warm
+    Queue[#Queue + 1] = Tab
+    if self.WarmConn then return end
+    self.WarmConn = RunService.Heartbeat:Connect(function()
+        local Next = TR(Queue, 1)
+        while Next and not Next.Pending do Next = TR(Queue, 1) end
+        if Next then self:BuildPending(Next) end
+        if #Queue == 0 then self.WarmConn:Disconnect(); self.WarmConn = nil end
+    end)
+end
+
+-------------------------------------------------------------------------- built-in settings tab
+
+function WindowClass:AddSettingsTab()
+    return self:AddTab({ Name = "Settings", Subtitle = "Menu, keybinds and server tools", Icon = "settings",
+        Build = function(Tab) self:FillSettings(Tab) end })
+end
+
+function WindowClass:FillSettings(Tab)
+    Tab:AddHeader("MENU")
+    if self.MenuBind then
+        local _, _, _, Rail = MakeRow(Tab.Parent, { Name = "Menu Keybind",
+            Description = "Opens and closes the menu. Click the key on the right, then press the key you want to use." })
+        BindPill(Rail(), self.MenuBind, "Settings::Menu Keybind_bind", self.Store)
+    end
+    Private.ThemeRow = Tab:AddDropdown({ Name = "Theme", Description = "The color the whole menu is built around. It changes the moment you pick one.",
+        Flag = false, Options = Library.Palettes, Default = Library.Palette, Callback = function(Name) Library:SetTheme(Name) end })
+    Tab:AddSlider({ Name = "Menu Size", Description = "How big the menu is on screen. 1.00 is the normal size.", Flag = "ui_scale_rel",
+        Min = 0.7, Max = 1.4, Default = 1, Decimals = 2, Callback = function(V) self:SetScale(V) end })
+    Tab:AddToggle({ Name = "Show Profile", Description = "Shows your avatar and username at the top of the sidebar.", Default = true,
+        Callback = function(On) self:SetProfileVisible(On) end })
+    Tab:AddToggle({ Name = "Launcher Button", Default = IsMobile, Flag = not IsMobile and "launcher_button" or false,
+        Description = IsMobile
+            and "The round button that reopens the menu after you close it. Turn it off and the only way back is to run the script again."
+            or "A round button that reopens the menu after you close it. Drag it anywhere on screen.",
+        Callback = function(On)
+            self:SetLauncher(On)
+            if IsMobile and not On then
+                Library:Notify({ Title = "Launcher hidden", Duration = 8,
+                    Content = "Once you close this menu there is no way to reopen it — run the script again to get it back." })
+            end
+        end })
+    if IsMobile then
+        Tab:AddToggle({ Name = "On-Screen Toggle Buttons", Flag = "onscreen_toggle_buttons", Default = false,
+            Description = "Puts a button on screen for every feature that has a key set. Tap it to turn that feature on or off without opening the menu.",
+            Callback = function(On) ShowActions(self, "Toggle", On) end })
+        Tab:AddToggle({ Name = "On-Screen Action Buttons", Flag = "onscreen_action_buttons", Default = false,
+            Description = "Puts a button on screen for every one-off action you have switched on. Tap it to run that action once without opening the menu.",
+            Callback = function(On) ShowActions(self, "Action", On) end })
+        Tab:AddToggle({ Name = "Lock On-Screen Buttons", Flag = "lock_onscreen_buttons", Default = false,
+            Description = "Holds both kinds of button where you put them, so you cannot drag one out of place by accident. Tapping them still works.",
+            Callback = function(On) self.Actions.Locked = On end })
+    end
+
+    Tab:AddHeader("CONFIG")
+    local Reset, Armed
+    Reset = Tab:AddButton({ Name = "Reset Settings", Callback = function()
+        if not Armed then
+            Armed = true
+            Reset.Text = "Press again to reset everything"
+            TDL(5, function()
+                if Armed and Reset.Parent then Armed = nil; Reset.Text = "Reset Settings" end
+            end)
+            return
+        end
+        Armed = nil
+        Reset.Text = "Reset Settings"
+        local N = Library:ResetSettings()
+        Library:Notify({ Title = "Settings reset", Duration = 5,
+            Content = ("Every setting is back the way it started (%d in all), and the saved file is gone."):format(N) })
+    end })
+
+    Tab:AddHeader("SERVER")
+    Tab:AddButtons({
+        { Name = "Server Hop", Callback = function()
+            local Body = Env.HttpGet(("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100"):format(game.PlaceId))
+            local Ok, Data = pcall(HttpService.JSONDecode, HttpService, Body or "")
+            local Open = {}
+            for _, Srv in Ok and type(Data) == "table" and Data.data or {} do
+                if Srv.playing < Srv.maxPlayers and Srv.id ~= game.JobId then Open[#Open + 1] = Srv.id end
+            end
+            if #Open == 0 then
+                Library:Notify({ Title = "Server Hop", Duration = 5, Content = "No other server to hop to right now. Wait a few seconds and try again." })
+                return
+            end
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, Open[math.random(#Open)], LocalPlayer)
+        end },
+        { Name = "Quick Rejoin", Callback = function()
+            if #Players:GetPlayers() <= 1 then TeleportService:Teleport(game.PlaceId, LocalPlayer)
+            else TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer) end
+        end },
+    })
+end
+
+--=====================================================================================
+--  14. Hub — Configure → Authorise → RegisterTab → Init
+--
+--  Optional. Builds the window itself once the key is in, with the Settings tab last.
+--  Register tabs unconditionally; a builder runs as build(tab, window).
+--=====================================================================================
+
+local Config = {
+    HUB_NAME = "", VERSION = "", DISCORD = "",
+    FOLDER = "SummitX",
+    API = "https://vk57znx9vk.apps.bot-hosting.cloud",
+    API_SECRET = "",
+    UNSUPPORTED = {}, UNSUPPORTED_NOTE = "",
+    GAME_IDS = {}, GAME_NAME = "", GAME_NOTE = "",
+    FORCE_MOBILE = nil,
+    KEY = { Enabled = false, Note = "", Keys = {} },
+}
+
+function Library:ExecutorName() return Env.Executor end
+
+--!mv:vm
+function Library:IsSupportedGame()
+    local Ids = Config.GAME_IDS
+    if type(Ids) ~= "table" or #Ids == 0 then return true end
+    for _, Id in Ids do
+        if tonumber(Id) == game.GameId then return true end
+    end
+    return false
+end
+
+--!mv:vm
+function Library:Allowed()
+    if Private.Allowed ~= nil then return Private.Allowed end
+    if game.GameId == 0 then return true end
+    Private.Allowed = true
+
+    local Title, Why
+    local Executor = Env.Executor:lower()
+    for _, Entry in Config.UNSUPPORTED or {} do
+        if type(Entry) == "string" and Entry ~= "" and Executor:find(Entry:lower(), 1, true) then
+            Title = "Executor not supported"
+            Why = ("%s doesn't run on %s."):format(Config.HUB_NAME, Env.Executor)
+                .. (Config.UNSUPPORTED_NOTE ~= "" and (" " .. Config.UNSUPPORTED_NOTE) or "")
+            break
+        end
+    end
+    if not Title and not self:IsSupportedGame() then
+        Title = "Wrong game"
+        Why = ("%s only works in %s."):format(Config.HUB_NAME ~= "" and Config.HUB_NAME or "This script",
+            Config.GAME_NAME ~= "" and Config.GAME_NAME or "a different game")
+            .. (Config.GAME_NOTE ~= "" and (" " .. Config.GAME_NOTE) or "")
+    end
+    if not Title then return true end
+
+    Private.Allowed = false
+    self:Notify({ Title = Title, Content = Why .. " Closing in a few seconds.", Duration = 8 })
+    TDL(9, function() if IsCurrent() then Library:Destroy() end end)
+    return false
+end
+
+--!mv:vm
+function Library:Configure(Opts)
+    for K, V in Opts do
+        if type(V) ~= "table" then Config[K] = V; continue end
+        if type(Config[K]) ~= "table" or V[1] ~= nil or Config[K][1] ~= nil then Config[K] = TC(V); continue end
+        for Field, Value in V do Config[K][Field] = type(Value) == "table" and TC(Value) or Value end
+    end
+    if Config.FORCE_MOBILE ~= nil then SetMobile(Config.FORCE_MOBILE) end
+    if type(Config.FOLDER) == "string" and Config.FOLDER ~= "" then Private.Folder = Config.FOLDER end
+    if Config.HUB_NAME ~= "" then Private.Title = Config.HUB_NAME end
+    self:Allowed()
+    return self
+end
+
+-------------------------------------------------------------------------- session
+
+--!mv:vm
+local function ApiBase()
+    local Base = Config.API
+    if type(Base) ~= "string" or Base == "" then return "" end
+    return (Base:gsub("/+$", ""))
+end
+
+--!mv:cff
+local function ApiCall(Path, Query, Body)
+    local Base = ApiBase()
+    if Base == "" or not Env.Request then return nil, "no api" end
+    local Req = { Url = Base .. Path .. (Query or ""), Method = Body and "POST" or "GET",
+        Headers = { ["X-SummitX-Auth"] = tostring(Config.API_SECRET or "") } }
+    if Body then
+        Req.Headers["Content-Type"] = "application/json"
+        Req.Body = HttpService:JSONEncode(Body)
+    end
+    local Sent, Res = pcall(Env.Request, Req)
+    if not Sent or type(Res) ~= "table" then return nil, tostring(Res) end
+    local Code = tonumber(Res.StatusCode)
+    if Code and (Code < 200 or Code >= 300) then
+        return nil, ("HTTP %d %s"):format(Code, tostring(Res.Body or ""):sub(1, 80))
+    end
+    local Ok, Data = pcall(HttpService.JSONDecode, HttpService, Res.Body or "")
+    if not Ok or type(Data) ~= "table" then return nil, "not valid JSON" end
+    return Data
+end
+
+--!mv:cff
+local function RunSession()
+    local OkId, Hwid = pcall(function()
+        return type(gethwid) == "function" and gethwid() or Service("RbxAnalyticsService"):GetClientId()
+    end)
+    local Body = { uid = LocalPlayer.UserId, place_id = game.PlaceId, hub = Config.HUB_NAME,
+        executor = Env.Executor, hwid = OkId and Hwid and tostring(Hwid) or nil }
+    local Data, Err
+    for Attempt = 1, 2 do
+        Data, Err = ApiCall("/session", nil, Body)
+        if Data or Err == "no api" then break end
+        if Attempt == 1 then task.wait(1.5) end
+    end
+    if not Data then
+        if Err ~= "no api" then Warn("session check failed: %s", tostring(Err)) end
+        Library:SetPremium(false, "free")
+        return
+    end
+    Private.StoreUrl = type(Data.store) == "string" and Data.store ~= "" and Data.store or nil
+    if Data.blocked then Library:SetPremium(false, "blocked") else Library:SetPremium(Data.premium == true) end
+end
+
+--!mv:cff
+function Library:Authorise()
+    if Private.Authorised ~= nil then return Private.Authorised end
+    Private.RestoreTheme()
+    TSP(RunSession)
+    Private.Authorised = self:Allowed()
+    return Private.Authorised
+end
+
+-------------------------------------------------------------------------- key gate
+
+--!mv:cff
+local function KeyCheck()
+    local KeyConfig = Config.KEY
+    local LocalKeys = type(KeyConfig.Keys) == "table" and #KeyConfig.Keys > 0
+    if not KeyConfig.Enabled or not (LocalKeys or ApiBase() ~= "") then return nil end
+
+    local function Normalise(S) return (tostring(S):gsub("%s", ""):gsub("%c", ""):lower()) end
+
+    local function MatchesLocal(Entered)
+        for _, K in KeyConfig.Keys or {} do
+            if Entered == Normalise(K) then return true end
+        end
+        return false
+    end
+
+    return function(Typed)
+        local Entered = Normalise(Typed)
+        if Entered == "" then return false end
+        if ApiBase() == "" then return MatchesLocal(Entered) end
+        local Data, Err = ApiCall("/key", "?k=" .. HttpService:UrlEncode(Entered), { key = Entered })
+        if Data and Data.valid == true then return true end
+        if Data and Data.reason ~= "not_configured" then return false end
+        if not Data then
+            Warn("key check failed: %s", tostring(Err))
+            if not LocalKeys then return false, true end
+        end
+        return MatchesLocal(Entered)
+    end
+end
+
+local function ShowKeyGate(Check, OnPass)
+    local KeyConfig = Config.KEY
+    local Kgui = Mount(9999)
+    SetCursor(true)
+
+    local Shell = Create("Frame", Kgui, { Size = UD2(0, 360, 0, 0), AutomaticSize = AS.Y,
+        AnchorPoint = V2(0.5, 0.5), Position = UFS(0.5, 0.5), BackgroundTransparency = 1, Active = true })
+    local ShellScale = Create("UIScale", Shell, { Scale = 1 })
+    DropShadow(Shell, 110, 0.6, 0)
+    local Card, CardStroke = GlassCard(Shell, { Size = UD2(1, 0, 0, 0), AutomaticSize = AS.Y, Active = true, ZIndex = 1 })
+    MakeDraggable(Card, Shell)
+    ListLayout(Card, 12)
+    Create("UIPadding", Card, { PaddingTop = UD(0, 20), PaddingBottom = UD(0, 20), PaddingLeft = UD(0, 20), PaddingRight = UD(0, 20) })
+
+    local Head = Create("Frame", Card, { Size = UD2(1, 0, 0, 30), BackgroundTransparency = 1, LayoutOrder = 1 })
+    Create("UIStroke", Create("TextLabel", Head, { Text = Config.HUB_NAME, Size = UD2(1, -70, 1, 0), TextColor3 = Theme.Accent,
+        FontFace = L.HubFont, TextSize = L.HubSize, TextXAlignment = TXA.Left }),
+        { Color = Theme.Stroke, Thickness = L.HubEdge, ApplyStrokeMode = ASM.Contextual })
+    Create("TextLabel", Head, { Text = "KEY SYSTEM", AnchorPoint = V2(1, 0.5), Position = UD2(1, -30, 0.5, 0),
+        Size = UFO(90, 16), TextColor3 = Theme.Placeholder, TextSize = 11,
+        TextXAlignment = TXA.Right })
+    Create("TextLabel", Card, { Text = KeyConfig.Note or "", Size = UD2(1, 0, 0, 0), AutomaticSize = AS.Y,
+        TextColor3 = Theme.SubText, TextWrapped = true, TextXAlignment = TXA.Left, LayoutOrder = 2 })
+
+    local Field = Create("Frame", Card, { Size = UD2(1, 0, 0, 40), BackgroundColor3 = Theme.Section, BackgroundTransparency = 0.15, LayoutOrder = 3 })
+    local _, FieldStroke = Decorate(Field, L.Corner8, { Theme.Stroke, 0.55, 1 })
+    local Box = Create("TextBox", Field, { PlaceholderText = "Paste your key", TextColor3 = Theme.Text, PlaceholderColor3 = Theme.Placeholder,
+        TextSize = L.TitleSize, Size = UD2(1, -20, 1, 0), Position = UFO(10, 0),
+        TextXAlignment = TXA.Left, ClipsDescendants = true })
+    Box.Focused:Connect(function() Tween(FieldStroke, { Color = Theme.Accent, Transparency = 0.2 }, 0.15) end)
+    Box.FocusLost:Connect(function() Tween(FieldStroke, { Color = Theme.Stroke, Transparency = 0.55 }, 0.15) end)
+
+    local Row = Create("Frame", Card, { Size = UD2(1, 0, 0, 36), BackgroundTransparency = 1, LayoutOrder = 4 })
+    ListLayout(Row, 8, true)
+    local GetKey = Button("Secondary", Row, { Text = "Get Key", Size = UD2(0.5, -4, 1, 0), LayoutOrder = 1 })
+    local SubmitButton = Button("Primary", Row, { Text = "Submit", Size = UD2(0.5, -4, 1, 0), LayoutOrder = 2 })
+
+    local Close = Button("Close", Shell, { Text = "×", Size = UFO(26, 26), AnchorPoint = V2(1, 0),
+        Position = UD2(1, -8, 0, 8), TextColor3 = Theme.Close, TextSize = 20, ZIndex = 6 })
+    Close.MouseButton1Click:Connect(function() Library:Destroy() end)
+
+    local Granted, Busy, DropPremium = false, false, nil
+
+    local function Refuse(Offline)
+        Box.Text = ""
+        Box.PlaceholderText = Offline and "Couldn't reach the server" or "That key didn't work"
+        TweenService:Create(Shell, TI(0.05, ES.Sine, Enum.EasingDirection.InOut, 4, true), { Rotation = 3 }):Play()
+        TweenService:Create(CardStroke, TI(0.3, ES.Sine, Enum.EasingDirection.Out, 0, true),
+            { Color = Theme.Bad, Transparency = 0.1 }):Play()
+        if Offline then
+            Library:Notify({ Title = "Couldn't check your key", Duration = 6, Content = "The key server didn't answer. Wait a moment and try again." })
+        else
+            Library:Notify({ Title = "That key didn't work", Duration = 5, Content = "Copy the whole key from the Discord and paste it again." })
+        end
+    end
+
+    local function Pass(ViaPremium)
+        if Granted then return end
+        Granted = true
+        if DropPremium then DropPremium() end
+        Tween(ShellScale, { Scale = 0.82 }, 0.2)
+        ApplySnapshot(Snapshot(Card), 1, 0.2)
+        TDL(0.28, function()
+            Kgui:Destroy()
+            if not IsCurrent() then return end
+            OnPass()
+            Library:Notify({ Title = "You're in", Duration = 4, Content = ViaPremium and "Premium — no key needed."
+                or ("Key accepted — loading " .. (Config.HUB_NAME ~= "" and Config.HUB_NAME or "the script") .. ".") })
+        end)
+    end
+    DropPremium = Library:OnPremiumChanged(function(IsPremium) if IsPremium then Pass(true) end end)
+
+    local function Submit()
+        if Granted or Busy then return end
+        Busy = true
+        SubmitButton.Text = "Checking..."
+        TSP(function()
+            local Ok, Offline = Check(Box.Text)
+            Busy = false
+            if Granted or not IsCurrent() then return end
+            SubmitButton.Text = "Submit"
+            if Ok then Pass(false) else Refuse(Offline) end
+        end)
+    end
+    SubmitButton.MouseButton1Click:Connect(Submit)
+    Box.FocusLost:Connect(function(Enter) if Enter then Submit() end end)
+    GetKey.MouseButton1Click:Connect(function()
+        local Copied = Env.Copy(Config.DISCORD)
+        GetKey.Text = Copied and "Link copied!" or "Link below"
+        Library:Notify({ Title = Copied and "Discord invite copied" or "Get your key", Duration = 6,
+            Content = Copied and "Paste it in your browser, grab your key, then paste the key above."
+                or ("Open " .. Config.DISCORD .. " in your browser, grab your key, then paste it above.") })
+        TDL(1.4, function() if GetKey.Parent then GetKey.Text = "Get Key" end end)
+    end)
+
+    local Snap = Snapshot(Card)
+    ApplySnapshot(Snap, 1)
+    ApplySnapshot(Snap, 0, 0.28)
+end
+
+-------------------------------------------------------------------------- boot
+
+function Library:RegisterTab(Name, Build, Subtitle, Icon)
+    table.insert(Private.Tabs, { Name = Name, Build = Build, Subtitle = Subtitle, Icon = Icon })
+end
+
+--!mv:cff
+local function BuildHub()
+    if not IsCurrent() then return end
+    local Window = Library:CreateWindow({ Title = Config.HUB_NAME ~= "" and Config.HUB_NAME or "SummitX", Version = Config.VERSION,
+        Discord = Config.DISCORD, Folder = Config.FOLDER, ConfigFile = Config.CONFIG_FILE })
+    for _, T in Private.Tabs do
+        if T.Settings then
+            Window:AddSettingsTab()
+        else
+            Window:AddTab({ Name = T.Name, Subtitle = T.Subtitle, Icon = T.Icon, Build = T.Build })
+        end
+    end
+end
+
+--!mv:cff
+function Library:Init()
+    if Private.Started then return end
+    Private.Started = true
+    if not self:Authorise() then return end
+
+    table.insert(Private.Tabs, { Name = "Settings", Settings = true })
+    local Rank = {}
+    for I, Name in TC(self.TabOrder or {}) do Rank[Name] = I end
+    for I, T in Private.Tabs do T.Seq = I end
+    table.sort(Private.Tabs, function(A, B)
+        local Ra, Rb = Rank[A.Name] or math.huge, Rank[B.Name] or math.huge
+        if Ra ~= Rb then return Ra < Rb end
+        return A.Seq < B.Seq
+    end)
+
+    local Check = KeyCheck()
+    if Check and not Private.Premium then
+        ShowKeyGate(Check, BuildHub)
+    else
+        TDF(BuildHub)
+    end
+end
+
+--=====================================================================================
+--  15. Keybind dispatch
+--=====================================================================================
+
+do
+    local Keyboard, Backspace, Escape = UIT.Keyboard, Enum.KeyCode.Backspace, Enum.KeyCode.Escape
+
+    local function Typing()
+        if Uis:GetFocusedTextBox() then return true end
+        local Chat = game:FindService("TextChatService")
+        Chat = Chat and Chat:FindFirstChild("ChatInputBarConfiguration")
+        return Chat ~= nil and Chat.IsFocused
+    end
+
+    Lifetime.Add(Uis.InputBegan:Connect(function(Io)
+        if Io.UserInputType ~= Keyboard then return end
+        local Name = Io.KeyCode.Name
+        local Armed = Pending
+        if Armed and not Uis:GetFocusedTextBox() then
+            Pending = nil
+            Armed.Key = (Io.KeyCode == Backspace or Io.KeyCode == Escape) and "NONE" or Name
+            Disarm(Armed)
+            if Armed.Store then Armed.Store:MarkDirty(Armed.Flag) end
+            return
+        end
+        if Io.KeyCode == Escape then
+            local Box = Uis:GetFocusedTextBox()
+            if Box then Box:ReleaseFocus(); return end
+            if Surface.Owner then Surface.Close(); return end
+        end
+        if Private.SliderDragging or Typing() then return end
+        for Entry in Binds do
+            if Entry.Key == Name then
+                if Entry.Mode == "Hold" then Entry.Action(true) else Entry.Action() end
+            end
+        end
+    end))
+
+    Lifetime.Add(Uis.InputEnded:Connect(function(Io)
+        if Io.UserInputType ~= Keyboard then return end
+        local Name = Io.KeyCode.Name
+        for Entry in Binds do
+            if Entry.Mode == "Hold" and Entry.Key == Name then Entry.Action(false) end
+        end
+    end))
+end
+
+Library.Env = table.freeze(Env)
+return Library
