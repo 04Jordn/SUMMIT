@@ -4,27 +4,9 @@
 --!nolint UnknownGlobal
 --!optimize 2
 
---=====================================================================================
---  SUMMITX  —  UI LIBRARY
---
---    local Library = loadstring(game:HttpGet(URL))()
---    local Window  = Library:CreateWindow({ Title = "SummitX", Version = "v1.0" })
---    local Tab     = Window:AddTab({ Name = "Player", Icon = "user" })
---    Tab:AddToggle({ Name = "Sprint", Callback = function(on) end })
---
---  Window   AddTab AddSettingsTab SelectTab GetTab SetOpen IsOpen Toggle SetScale Destroy
---  Widgets  AddToggle AddSlider AddDropdown AddKeybind AddInput AddButton AddButtons AddLabel
---           AddHeader AddDivider AddSection               (tabs and sections take the same calls)
---  Options  Name Description Default Callback Flag Premium        Handle  h.Get() h.Set(v) h:OnChanged(fn)
---  Library  Notify SetTheme GetFlag SetFlag SaveConfig ResetSettings RegisterLoop RemoveLoop
---           Await Require OnCleanup Destroy       Library.Env  Library.Theme  Library.IsMobile
---  Hub      Configure Authorise RegisterTab Init -- key gate, premium, game/executor checks (section 14)
---
---  Executor functions are read once in section 1; the rest of the file reaches them only through Env.
---  ⚠ MoonVeil: omit only closure-free per-frame functions, and one directive per call tree.
---=====================================================================================
+-- SummitX UI library
 
---------------------------------------------------------------------------- cached globals
+-------------------------------------------------------------------------- cached globals
 local AS = Enum.AutomaticSize
 local TXA = Enum.TextXAlignment
 local SO = Enum.SortOrder
@@ -61,9 +43,7 @@ local OC = os.clock
 local Library = { TabOrder = {} }
 local Private = { Tabs = {} }
 
---=====================================================================================
---  1. Executor environment
---=====================================================================================
+-------------------------------------------------------------------------- executor environment
 
 local Env = {}
 do
@@ -110,13 +90,11 @@ do
     end
 end
 
---=====================================================================================
---  2. Services & platform
---=====================================================================================
+-------------------------------------------------------------------------- services & platform
 
 local function Service(Name) return Env.Ref(game:GetService(Name)) end
 
-local Players, Uis, RunService = Service("Players"), Service("UserInputService"), Service("RunService")
+local Players, UserInputService, RunService = Service("Players"), Service("UserInputService"), Service("RunService")
 local TweenService, HttpService, TeleportService = Service("TweenService"), Service("HttpService"), Service("TeleportService")
 local GuiService, MarketplaceService = Service("GuiService"), Service("MarketplaceService")
 local LocalPlayer = Players.LocalPlayer or Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
@@ -133,12 +111,10 @@ local function SetMobile(V)
 end
 do
     local Ok, TenFoot = pcall(GuiService.IsTenFootInterface, GuiService)
-    SetMobile(not (Ok and TenFoot) and Uis.TouchEnabled and not Uis.KeyboardEnabled)
+    SetMobile(not (Ok and TenFoot) and UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled)
 end
 
---=====================================================================================
---  3. Lifetime
---=====================================================================================
+-------------------------------------------------------------------------- lifetime
 
 local Shared = Env.Shared
 local MarkAttribute = "SummitX"
@@ -203,25 +179,23 @@ local SetCursor
 do
     local Forced, Saved, GuardConn = false, nil, nil
     local function Guard()
-        if not Uis.MouseIconEnabled then Uis.MouseIconEnabled = true end
+        if not UserInputService.MouseIconEnabled then UserInputService.MouseIconEnabled = true end
     end
     function SetCursor(Show)
         if Show and not Forced then
-            Forced, Saved = true, Uis.MouseIconEnabled
-            Uis.MouseIconEnabled = true
+            Forced, Saved = true, UserInputService.MouseIconEnabled
+            UserInputService.MouseIconEnabled = true
             GuardConn = RunService.Heartbeat:Connect(Guard)
         elseif not Show and Forced then
             Forced = false
             if GuardConn then GuardConn:Disconnect(); GuardConn = nil end
-            Uis.MouseIconEnabled = Saved
+            UserInputService.MouseIconEnabled = Saved
         end
     end
     Lifetime.Add(function() SetCursor(false) end)
 end
 
---=====================================================================================
---  4. Animation
---=====================================================================================
+-------------------------------------------------------------------------- animation
 
 local Motors = {}
 local Fades = {}
@@ -256,9 +230,9 @@ local function StepMotors(Dt)
     local Fired = 0
     for Obj, Props in Motors do
         for Prop, M in Props do
-            local Settled, State = true, M.c
-            local A, B, C, D = SpringCoeffs(M.f, M.d, Dt)
-            for I = 1, M.n do
+            local Settled, State = true, M.State
+            local A, B, C, D = SpringCoeffs(M.Freq, M.Damp, Dt)
+            for I = 1, M.Count do
                 local Base = (I - 1) * 3
                 local G = State[Base + 3]
                 local Offset, V0 = State[Base + 1] - G, State[Base + 2]
@@ -267,10 +241,10 @@ local function StepMotors(Dt)
                 State[Base + 1], State[Base + 2] = P, V
                 Scratch[I] = P
             end
-            Obj[Prop] = M.k(Scratch)
+            Obj[Prop] = M.Compose(Scratch)
             if Settled then
                 Props[Prop] = nil
-                if M.done then Fired += 1; MotorDone[Fired] = M.done end
+                if M.Done then Fired += 1; MotorDone[Fired] = M.Done end
             end
         end
         if Next(Props) == nil then Motors[Obj] = nil end
@@ -284,9 +258,9 @@ end
 
 --!mv:omit
 local function WriteSnap(Snap, Alpha)
-    if Snap.a == Alpha then return end
-    Snap.a = Alpha
-    local Pane, Inner = Snap.pane, MM(1, Alpha * Snap.lead)
+    if Snap.Alpha == Alpha then return end
+    Snap.Alpha = Alpha
+    local Pane, Inner = Snap.Pane, MM(1, Alpha * Snap.Lead)
     for I = 1, #Snap, 3 do
         local Base = Snap[I + 2]
         local A = (not Pane or Pane[Snap[I]]) and Alpha or Inner
@@ -299,14 +273,14 @@ local FadeDone = {}
 local function StepFades()
     local Now, Fired = OC(), 0
     for Snap, F in Fades do
-        local A = (Now - F.t) / F.d
+        local A = (Now - F.Start) / F.Duration
         if A >= 1 then
             A = 1
             Fades[Snap] = nil
-            if F.done then Fired += 1; FadeDone[Fired] = F.done end
+            if F.Done then Fired += 1; FadeDone[Fired] = F.Done end
         end
         A = 1 - (1 - A) * (1 - A)
-        WriteSnap(Snap, F.from + (F.to - F.from) * A)
+        WriteSnap(Snap, F.From + (F.To - F.From) * A)
     end
     for I = 1, Fired do
         local Fn = FadeDone[I]
@@ -338,7 +312,7 @@ function ApplySnapshot(Snap, Alpha, Time, OnDone)
         if OnDone then OnDone() end
         return
     end
-    Fades[Snap] = { from = Snap.a or 0, to = Alpha, d = Time, done = OnDone, t = OC() }
+    Fades[Snap] = { From = Snap.Alpha or 0, To = Alpha, Duration = Time, Done = OnDone, Start = OC() }
     WakeTick()
 end
 
@@ -377,13 +351,13 @@ function Tween(Obj, Props, Time, Damping, OnDone)
         if Dg and Dc then Gn, Kind = Dg(Goal, DecGoal) end
         if not Gn or Dc(Cur, DecCur) ~= Gn then Obj[Prop] = Goal; continue end
         local M = Reg[Prop] or {}
-        local State = M.c
+        local State = M.State
         if not State or #State ~= Gn * 3 then State = TCR(Gn * 3) end
         for I = 1, Gn do
             local Base = (I - 1) * 3
             State[Base + 1], State[Base + 2], State[Base + 3] = DecCur[I], State[Base + 2] or 0, DecGoal[I]
         end
-        M.c, M.n, M.f, M.d, M.k, M.g, M.done = State, Gn, Freq, Damp, Kind, Goal, Pending
+        M.State, M.Count, M.Freq, M.Damp, M.Compose, M.Goal, M.Done = State, Gn, Freq, Damp, Kind, Goal, Pending
         Reg[Prop], Pending = M, nil
     end
     if Pending then TDF(Pending) end
@@ -400,7 +374,7 @@ function CancelMotors(Obj, Prop)
     if not M then return nil end
     Reg[Prop] = nil
     if next(Reg) == nil then Motors[Obj] = nil end
-    return M.g
+    return M.Goal
 end
 
 -------------------------------------------------------------------------- snapshot fades
@@ -468,7 +442,7 @@ end
 function Snapshot(Root, Skip, Pane)
     local Snap = TCR(1024)
     Walk(Root, Snap, 0, Skip)
-    Snap.pane, Snap.lead = Pane, InnerLead
+    Snap.Pane, Snap.Lead = Pane, InnerLead
     return Snap
 end
 
@@ -496,7 +470,7 @@ function FaderClass:Capture()
     return self.Snap
 end
 
-function FaderClass:Alpha() return (self.Snap and self.Snap.a) or 0 end
+function FaderClass:Alpha() return (self.Snap and self.Snap.Alpha) or 0 end
 
 function FaderClass:Show(Show)
     self.Gen += 1
@@ -537,9 +511,9 @@ end
 function FaderClass:SetRest(Inst, Prop, Value)
     CancelMotors(Inst, Prop)
     local Snap = self.Snap
-    local A = (Snap and Snap.a) or 0
+    local A = (Snap and Snap.Alpha) or 0
     if A <= 0 then Inst[Prop] = Value; return end
-    local Pane = Snap.pane
+    local Pane = Snap.Pane
     local At = (not Pane or Pane[Inst]) and A or MM(1, A * InnerLead)
     local N = #Snap
     for I = 1, N, 3 do
@@ -553,9 +527,7 @@ function FaderClass:SetRest(Inst, Prop, Value)
     Inst[Prop] = Value + (1 - Value) * At
 end
 
---=====================================================================================
---  5. Theme & palettes
---=====================================================================================
+-------------------------------------------------------------------------- theme & palettes
 
 local ColorWhite, ColorBlack = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
 
@@ -746,9 +718,7 @@ function Library:SetTheme(Name)
     return true
 end
 
---=====================================================================================
---  6. Instances
---=====================================================================================
+-------------------------------------------------------------------------- instances
 
 local L = {
     PadX = 15, PadY = 15, LabelGap = 5, RailGap = 10, TitleSize = 14, DescSize = 12,
@@ -866,9 +836,9 @@ local function ResolveSpec(V) return type(V) == "function" and V() or V end
 local function ResetInteractives()
     for Target, Entry in HotTargets do
         HotTargets[Target] = nil
-        if Target.Parent and (not Entry.gate or Entry.gate()) then
+        if Target.Parent and (not Entry.Gate or Entry.Gate()) then
             CancelMotors(Target)
-            for Prop, V in ResolveSpec(Entry.out) do Target[Prop] = V end
+            for Prop, V in ResolveSpec(Entry.Out) do Target[Prop] = V end
         end
     end
 end
@@ -877,7 +847,7 @@ local function Interactive(Btn, Spec)
     local Target = Spec.Target or Btn
     local Over, Out, Down, T, Gate = Spec.Over, Spec.Out, Spec.Down, Spec.Time or 0.14, Spec.Enabled
     Paint.NoteSpec(Over, Target); Paint.NoteSpec(Out, Target); Paint.NoteSpec(Down, Target)
-    local Entry = Out and { out = Out, gate = Gate } or nil
+    local Entry = Out and { Out = Out, Gate = Gate } or nil
 
     if Over then Btn.MouseEnter:Connect(function()
         if Gate and not Gate() then return end
@@ -1009,9 +979,7 @@ local function Button(Style, Parent, Props, Icon)
     return Btn, Stroke, Glyph
 end
 
---=====================================================================================
---  7. Input & drag
---=====================================================================================
+-------------------------------------------------------------------------- input & drag
 
 local function IsPress(T) return T == UIT.MouseButton1 or T == UIT.Touch end
 local function IsMove(T) return T == UIT.MouseMovement or T == UIT.Touch end
@@ -1028,9 +996,9 @@ local function BeginDrag(OnMove)
     local function Apply()
         if Latest then local I = Latest; Latest = nil; OnMove(I) end
     end
-    DragScope.Add(Uis.InputChanged:Connect(Note))
+    DragScope.Add(UserInputService.InputChanged:Connect(Note))
     DragScope.Add(RunService.PreRender:Connect(Apply))
-    DragScope.Add(Uis.InputEnded:Connect(function(I)
+    DragScope.Add(UserInputService.InputEnded:Connect(function(I)
         if IsPress(I.UserInputType) then DragScope.Clean() end
     end))
     DragScope.Add(function() if Latest then OnMove(Latest); Latest = nil end end)
@@ -1115,9 +1083,7 @@ local function DragFree(Face, Holder, Gui, OnTap, Locked, OnMoved)
     end)
 end
 
---=====================================================================================
---  8. Notifications
---=====================================================================================
+-------------------------------------------------------------------------- notifications
 
 do
     local NotifyMax, BarBody = 6, 40
@@ -1149,9 +1115,8 @@ do
             Label.MaxVisibleGraphemes = -1
         end
         Conn = RunService.Heartbeat:Connect(function()
-            if not Label.Parent then return Stop() end
             local A = (OC() - T0) / Time
-            if A >= 1 then return Stop() end
+            if not Label.Parent or A >= 1 then Stop(); return end
             Label.MaxVisibleGraphemes = math.floor(Total * A)
         end)
         return Stop
@@ -1224,9 +1189,7 @@ do
     end
 end
 
---=====================================================================================
---  9. Loops
---=====================================================================================
+-------------------------------------------------------------------------- loops
 
 do
     local LoopFailLimit = 5
@@ -1287,9 +1250,7 @@ do
     end
 end
 
---=====================================================================================
---  10. Game lookups
---=====================================================================================
+-------------------------------------------------------------------------- game lookups
 
 do
     local Failed = false
@@ -1322,9 +1283,7 @@ do
     end
 end
 
---=====================================================================================
---  11. Config store
---=====================================================================================
+-------------------------------------------------------------------------- config store
 
 local function CloneValue(V) return type(V) == "table" and TC(V) or V end
 
@@ -1445,9 +1404,7 @@ function Library:ResetSettings()
     return N
 end
 
---=====================================================================================
---  12. Widgets
---=====================================================================================
+-------------------------------------------------------------------------- widgets
 
 local function Spawn(Fn, ...)
     if Fn ~= nil then TSP(Fn, ...) end
@@ -1457,7 +1414,7 @@ end
 
 Private.Premium = false
 Library.IsPremium = false
-Library.PremiumState = "checking"        -- checking | free | premium | blocked
+Library.PremiumState = "checking"
 
 local PremiumGates, PremiumHooks = {}, {}
 
@@ -1530,68 +1487,82 @@ local KeyShort = {
     Insert = "Ins", Escape = "Esc", Return = "Enter", KeypadEnter = "NumEnter", PrintScreen = "PrtSc",
 }
 
-local function NewBind(Key, Action, CanHold)
-    local Entry = { Key = Key or "NONE", Mode = "Toggle", Action = Action, CanHold = CanHold }
-    Binds[Entry] = true
-    return Entry
+local BindClass = {}
+BindClass.__index = BindClass
+
+function BindClass.new(Key, Action, CanHold)
+    local self = setmetatable({ Key = Key or "NONE", Mode = "Toggle", Action = Action, CanHold = CanHold }, BindClass)
+    Binds[self] = true
+    return self
 end
 
-local function DropBind(Entry)
-    Binds[Entry] = nil
-    if Pending == Entry then Pending = nil end
-end
-Lifetime.Add(function() TCL(Binds); Pending = nil end)
-
-local function BindSlot(Entry)
-    return {
-        Get = function() return Entry.Mode == "Hold" and (Entry.Key .. "|hold") or Entry.Key end,
-        Set = function(V)
-            V = tostring(V)
-            local Key, Mode = V:match("^(.-)|(.+)$")
-            Entry.Key = Key or V
-            Entry.Mode = (Mode == "hold" and Entry.CanHold) and "Hold" or "Toggle"
-            if Entry.Render then Entry.Render() end
-        end,
-    }
+function BindClass:Drop()
+    Binds[self] = nil
+    if Pending == self then Pending = nil end
 end
 
-local function Disarm(Entry)
-    if Entry.Render then Entry.Render() end
-    if Entry.Pill then Tween(Entry.Pill, { TextColor3 = Theme.SubText, BackgroundColor3 = Theme.BindBackground }) end
+function BindClass:Render()
+    if not self.Pill then return end
+    self.Pill.Text = (KeyShort[self.Key] or self.Key) .. (self.Mode == "Hold" and "  HOLD" or "")
 end
 
-local function Arm(Entry)
-    if Pending and Pending ~= Entry then Disarm(Pending) end
-    Pending = Entry
-    Entry.Pill.Text = "..."
-    Tween(Entry.Pill, { TextColor3 = Theme.Accent, BackgroundColor3 = Theme.Section })
+function BindClass:Load(Value)
+    Value = tostring(Value)
+    local Key, Mode = Value:match("^(.-)|(.+)$")
+    self.Key = Key or Value
+    self.Mode = (Mode == "hold" and self.CanHold) and "Hold" or "Toggle"
+    self:Render()
 end
 
-local function BindPill(Parent, Entry, Flag, Store)
+function BindClass:Save() return self.Mode == "Hold" and (self.Key .. "|hold") or self.Key end
+
+function BindClass:Arm()
+    if Pending and Pending ~= self then Pending:Disarm() end
+    Pending = self
+    self.Pill.Text = "..."
+    Tween(self.Pill, { TextColor3 = Theme.Accent, BackgroundColor3 = Theme.Section })
+end
+
+function BindClass:Disarm()
+    self:Render()
+    if self.Pill then Tween(self.Pill, { TextColor3 = Theme.SubText, BackgroundColor3 = Theme.BindBackground }) end
+end
+
+function BindClass:Capture(Key)
+    self.Key = Key
+    self:Disarm()
+    if self.Store then self.Store:MarkDirty(self.Flag) end
+end
+
+function BindClass:Press()
+    if self.Mode == "Hold" then self.Action(true) else self.Action() end
+end
+
+function BindClass:Release()
+    if self.Mode == "Hold" then self.Action(false) end
+end
+
+function BindClass:Mount(Parent, Flag, Store)
     local Pill = Create("TextButton", Parent, { AutomaticSize = AS.X,
         Size = UD2(0, 0, 0, 22), LayoutOrder = 5, BackgroundColor3 = Theme.BindBackground, BackgroundTransparency = 0.5,
         TextColor3 = Theme.SubText, TextSize = 10 })
     Decorate(Pill, L.Corner6, { Theme.Stroke, 0.7, 1 }, { nil, nil, 10, 10 })
     Create("UISizeConstraint", Pill, { MinSize = V2(44, 22) })
     Interactive(Pill, { Over = { BackgroundTransparency = 0.2 }, Out = { BackgroundTransparency = 0.5 }, Time = 0.15 })
+    self.Pill, self.Flag, self.Store = Pill, Flag, Store
+    self:Render()
 
-    Entry.Pill, Entry.Flag, Entry.Store = Pill, Flag, Store
-    function Entry.Render()
-        Pill.Text = (KeyShort[Entry.Key] or Entry.Key) .. (Entry.Mode == "Hold" and "  HOLD" or "")
-    end
-    Entry.Render()
-
-    local Slot = BindSlot(Entry)
+    local Slot = { Get = function() return self:Save() end, Set = function(Value) self:Load(Value) end }
     Store:Register(Flag, Slot)
     Pill.Destroying:Connect(function()
-        if Pending == Entry then Pending = nil end
+        if Pending == self then Pending = nil end
         Store:Unregister(Flag, Slot)
     end)
-    Pill.MouseButton1Click:Connect(function() Arm(Entry) end)
-    if Entry.CanHold then
+    Pill.MouseButton1Click:Connect(function() self:Arm() end)
+    if self.CanHold then
         Pill.MouseButton2Click:Connect(function()
-            Entry.Mode = Entry.Mode == "Hold" and "Toggle" or "Hold"
-            Entry.Render()
+            self.Mode = self.Mode == "Hold" and "Toggle" or "Hold"
+            self:Render()
             Store:MarkDirty(Flag)
         end)
     end
@@ -1670,7 +1641,7 @@ local function MakeRow(Parent, Props, Active)
         end
         return RailFrame
     end
-    return Frame, Stroke, NameLbl, Rail
+    return Frame, Stroke, NameLbl, Rail, Content
 end
 
 local function RowHit(Frame)
@@ -1737,79 +1708,87 @@ end
 local function DefineControl(Kind, Build)
     Container["Add" .. Kind] = function(self, Props)
         Props = TC(Props or {})
-        local Frame, Stroke, NameLbl, Rail = MakeRow(self.Parent, Props, Props.Active)
+        local Frame, Stroke, NameLbl, Rail, Content = MakeRow(self.Parent, Props, Props.Active)
         Gate(Frame, Props)
-        local H = WireTeardown(Build(self, Props, { Instance = Frame, Stroke = Stroke, NameLabel = NameLbl, Rail = Rail }))
+        local H = WireTeardown(Build(self, Props, { Instance = Frame, Stroke = Stroke, NameLabel = NameLbl, Rail = Rail, Content = Content }))
         if type(H) == "table" then H.Row = Frame elseif H == nil then Frame:Destroy() end
         return H
     end
 end
 
--------------------------------------------------------------------------- on-screen buttons (touch)
+-------------------------------------------------------------------------- on-screen buttons
 
-local function ActionButton(Window, Group, Text, OnFire, Stateful)
-    local Gui, A = Window.Gui, Window.Actions
+local ActionClass = {}
+ActionClass.__index = ActionClass
+
+function ActionClass.new(Window, Group, Text, OnFire, Stateful)
+    local Gui, Actions = Window.Gui, Window.Actions
     local Holder = Create("Frame", Gui, { Size = UFO(0, 38), AutomaticSize = AS.X,
         Position = UD2(0, 18, 0.34, 0), BackgroundTransparency = 1, ZIndex = 150, Visible = false })
-    local Entry = { Group = Group, Holder = Holder, Allowed = true, Moved = false }
-    A.List[#A.List + 1] = Entry
-
-    local function Free()
-        if Entry.Slot then A.Slots[Entry.Slot] = nil; Entry.Slot = nil end
-    end
-    function Entry.Draw()
-        local On = A.Shown[Group] and Entry.Allowed
-        if On and not (Entry.Slot or Entry.Moved) then
-            local Slot = 1
-            while A.Slots[Slot] do Slot += 1 end
-            A.Slots[Slot], Entry.Slot = true, Slot
-            Holder.Position = UD2(0, 18, 0.34, (Slot - 1) * 48)
-        elseif not On then
-            Free()
-        end
-        Holder.Visible = On
-    end
-    Holder.Destroying:Connect(function()
-        Free()
-        local At = table.find(A.List, Entry)
-        if At then TR(A.List, At) end
-    end)
-
     local Face, FaceStroke = Button(Stateful and "Stateful" or "Action", Holder, { Text = Text, Size = UD2(0, 0, 1, 0),
         AutomaticSize = AS.X, ZIndex = 150 })
-    DragFree(Face, Holder, Gui, OnFire, function() return A.Locked end, function()
-        Entry.Moved = true
-        Free()
+    local self = setmetatable({ Group = Group, Holder = Holder, Face = Face, FaceStroke = FaceStroke, Actions = Actions,
+        Allowed = true, Moved = false }, ActionClass)
+    Actions.List[#Actions.List + 1] = self
+    Holder.Destroying:Connect(function()
+        self:Free()
+        local At = table.find(Actions.List, self)
+        if At then TR(Actions.List, At) end
     end)
-
-    function Entry.SetOn(On, Animated)
-        local Fc, Tc = On and Theme.ToggleActive or Theme.Section, On and Theme.Text or Theme.SubText
-        local Sc, St = On and Theme.Active or Theme.Stroke, On and 0.2 or 0.55
-        if Animated then
-            Tween(Face, { BackgroundColor3 = Fc, TextColor3 = Tc }, 0.2)
-            Tween(FaceStroke, { Color = Sc, Transparency = St })
-        else
-            CancelMotors(Face); CancelMotors(FaceStroke)
-            Face.BackgroundColor3, Face.TextColor3, FaceStroke.Color, FaceStroke.Transparency = Fc, Tc, Sc, St
-        end
-    end
-    function Entry.SetAllowed(Ok)
-        Ok = not not Ok
-        if Entry.Allowed == Ok then return end
-        Entry.Allowed = Ok
-        Entry.Draw()
-    end
-    function Entry.Destroy() Holder:Destroy() end
-
-    Entry.Draw()
-    return Entry
+    DragFree(Face, Holder, Gui, OnFire, function() return Actions.Locked end, function()
+        self.Moved = true
+        self:Free()
+    end)
+    self:Draw()
+    return self
 end
+
+function ActionClass:Free()
+    if not self.Slot then return end
+    self.Actions.Slots[self.Slot] = nil
+    self.Slot = nil
+end
+
+function ActionClass:Draw()
+    local Actions = self.Actions
+    local On = Actions.Shown[self.Group] and self.Allowed
+    if not On then self:Free() end
+    if On and not (self.Slot or self.Moved) then
+        local Slot = 1
+        while Actions.Slots[Slot] do Slot += 1 end
+        Actions.Slots[Slot], self.Slot = true, Slot
+        self.Holder.Position = UD2(0, 18, 0.34, (Slot - 1) * 48)
+    end
+    self.Holder.Visible = On
+end
+
+function ActionClass:SetOn(On, Animated)
+    local Face, FaceStroke = self.Face, self.FaceStroke
+    local Fc, Tc = On and Theme.ToggleActive or Theme.Section, On and Theme.Text or Theme.SubText
+    local Sc, St = On and Theme.Active or Theme.Stroke, On and 0.2 or 0.55
+    if Animated then
+        Tween(Face, { BackgroundColor3 = Fc, TextColor3 = Tc }, 0.2)
+        Tween(FaceStroke, { Color = Sc, Transparency = St })
+        return
+    end
+    CancelMotors(Face); CancelMotors(FaceStroke)
+    Face.BackgroundColor3, Face.TextColor3, FaceStroke.Color, FaceStroke.Transparency = Fc, Tc, Sc, St
+end
+
+function ActionClass:SetAllowed(Ok)
+    Ok = not not Ok
+    if self.Allowed == Ok then return end
+    self.Allowed = Ok
+    self:Draw()
+end
+
+function ActionClass:Destroy() self.Holder:Destroy() end
 
 local function ShowActions(Window, Group, On)
     local A = Window.Actions
     A.Shown[Group] = not not On
     for _, Entry in A.List do
-        if Entry.Group == Group then Entry.Draw() end
+        if Entry.Group == Group then Entry:Draw() end
     end
 end
 
@@ -1916,8 +1895,8 @@ DefineControl("Toggle", function(Ctx, Props, Host)
         local On = Shown()
         Repaint(On, Animated)
         if ActionBtn then
-            ActionBtn.SetAllowed(not Locked(Props))
-            ActionBtn.SetOn(On, Animated)
+            ActionBtn:SetAllowed(not Locked(Props))
+            ActionBtn:SetOn(On, Animated)
         end
     end
 
@@ -1936,17 +1915,17 @@ DefineControl("Toggle", function(Ctx, Props, Host)
     H.Instance = Ring
 
     if Props.Keybind ~= nil and not IsMobile then
-        local Entry = NewBind(Props.Keybind, function(Down)
+        local Entry = BindClass.new(Props.Keybind, function(Down)
             if Down == nil then SetState(not State) else SetState(Down) end
         end, true)
-        BindPill(Host.Rail(), Entry, Flag and (Flag .. "_bind") or nil, Window.Store)
-        H.AddTeardown(function() DropBind(Entry) end)
+        Entry:Mount(Host.Rail(), Flag and (Flag .. "_bind") or nil, Window.Store)
+        H.AddTeardown(function() Entry:Drop() end)
     elseif Props.Keybind ~= nil then
-        ActionBtn = ActionButton(Window, "Toggle", Props.Name, function()
+        ActionBtn = ActionClass.new(Window, "Toggle", Props.Name, function()
             if Locked(Props) then PremiumNag(); return end
             SetState(not State)
         end, true)
-        H.AddTeardown(ActionBtn.Destroy)
+        H.AddTeardown(function() ActionBtn:Destroy() end)
     end
 
     ApplyVisual(false)
@@ -1974,15 +1953,15 @@ DefineControl("Keybind", function(Ctx, Props, Host)
 
     if not IsMobile then
         local BindFlag = Flag and (Flag .. "_bind") or nil
-        local Entry = NewBind(Props.Keybind, Fire, false)
-        local Pill, Slot = BindPill(Host.Rail(), Entry, BindFlag, Window.Store)
+        local Entry = BindClass.new(Props.Keybind, Fire, false)
+        local Pill, Slot = Entry:Mount(Host.Rail(), BindFlag, Window.Store)
         local H = { Flag = BindFlag, Instance = Pill, Get = Slot.Get, OnChanged = AddObserver }
         function H.Set(V)
             Slot.Set(V)
             Window.Store:MarkDirty(BindFlag)
             FireObservers(H, Slot.Get())
         end
-        function H.Teardown() DropBind(Entry) end
+        function H.Teardown() Entry:Drop() end
         return H
     end
 
@@ -1994,8 +1973,8 @@ DefineControl("Keybind", function(Ctx, Props, Host)
     local function ApplyVisual(Animated)
         local On = State and not Locked(Props)
         Repaint(On, Animated)
-        if On and not Btn then Btn = ActionButton(Window, "Action", Props.Name, Fire)
-        elseif not On and Btn then Btn.Destroy(); Btn = nil end
+        if On and not Btn then Btn = ActionClass.new(Window, "Action", Props.Name, Fire)
+        elseif not On and Btn then Btn:Destroy(); Btn = nil end
     end
     local function SetState(V)
         V = not not V
@@ -2008,7 +1987,7 @@ DefineControl("Keybind", function(Ctx, Props, Host)
     local H
     H, Changed = Bind(Ctx, Props, Flag, function() return State end, SetState)
     H.Instance = Ring
-    H.AddTeardown(function() if Btn then Btn.Destroy(); Btn = nil end end)
+    H.AddTeardown(function() if Btn then Btn:Destroy(); Btn = nil end end)
     if Props.Premium then H.AddTeardown(Library:OnPremiumChanged(function() ApplyVisual(true) end)) end
     ApplyVisual(false)
     Hit.MouseButton1Click:Connect(function() SetState(not State) end)
@@ -2075,21 +2054,16 @@ DefineControl("Slider", function(Ctx, Props, Host)
     return H
 end)
 
--------------------------------------------------------------------------- surface (the one popup panel)
+-------------------------------------------------------------------------- surface
 
 local Surface = { Views = {} }
 
 function Surface.Mount(Window)
     if Surface.Window == Window and Surface.Portal.Parent then return end
-    local Gui = Window.Gui
-    local Catcher = Create("TextButton", Gui, { Size = UFS(1, 1), Visible = false, ZIndex = 198 })
-    Catcher.MouseButton1Click:Connect(function() Surface.Close() end)
-    local Portal = Create("TextButton", Gui, { Size = UFO(160, 100), Visible = false, ZIndex = 200 })
-    local Scale = Create("UIScale", Portal, { Scale = 1 })
-    DropShadow(Portal, 56, 0.5, 199)
-    local Panel = Create("Frame", Portal, { Size = UFS(1, 1), BackgroundColor3 = Theme.Sidebar, BackgroundTransparency = 0.02, ZIndex = 200 })
+    local Portal = Create("Frame", Window.PageHost, { BackgroundTransparency = 1, Visible = false })
+    local Panel = Create("TextButton", Portal, { Size = UD2(1, 0, 1, -L.PadY), BackgroundColor3 = Theme.Sidebar, BackgroundTransparency = 0.02 })
     Decorate(Panel, L.Corner8, { Theme.WindowStroke, 0.35, 1.2 })
-    Surface.Window, Surface.Catcher, Surface.Portal, Surface.Scale, Surface.Panel = Window, Catcher, Portal, Scale, Panel
+    Surface.Window, Surface.Portal, Surface.Panel = Window, Portal, Panel
     Surface.Owner, Surface.Views = nil, {}
 end
 
@@ -2104,43 +2078,51 @@ end
 function Surface.IsOpen(Owner) return Owner ~= nil and Surface.Owner == Owner end
 
 function Surface.Place()
-    local Owner, Window = Surface.Owner, Surface.Window
+    local Owner = Surface.Owner
     if not Owner then return end
-    local Sc = MX(Window.Scale.Scale, 0.01)
-    if Surface.Scale.Scale ~= Sc then
-        Surface.Scale.Scale = Sc
-        Owner.OnRescale()
-    end
-    local Height = Owner.Height()
-    local Gui, Anchor = Window.Gui, Surface.Anchor
-    local Origin, Abs, Size = Gui.AbsolutePosition, Anchor.AbsolutePosition, Anchor.AbsoluteSize
-    local Lx, Ly, VpY = Abs.X - Origin.X, Abs.Y - Origin.Y, Gui.AbsoluteSize.Y
-    local Below, Scaled = Ly + Size.Y + 6, Height * Sc
-    Surface.Portal.Size = UFO(Size.X / Sc, Height)
-    if Below + Scaled > VpY - 10 and Ly - Scaled - 6 > 10 then
-        Surface.Portal.Position = UFO(Lx, Ly - Scaled - 6)
-        return
-    end
-    Surface.Portal.Position = UFO(Lx, MM(Below, MX(10, VpY - Scaled - 10)))
+    local Sc = MX(Surface.Window.Scale.Scale, 0.01)
+    Surface.Portal.Position = UD2(0, L.PadX, 0, Owner.Content.AbsoluteSize.Y / Sc - 4)
+    Surface.Portal.Size = UD2(1, -L.PadX * 2, 0, Owner.Height() + L.PadY)
 end
 
-function Surface.Open(Window, Owner, Anchor)
+function Surface.Reveal(Row)
+    local Page = Surface.Owner and Surface.Owner.Clip
+    if not Page then return end
+    local Sc = MX(Surface.Window.Scale.Scale, 0.01)
+    local Portal = Surface.Portal
+    local Bottom = Row.AbsolutePosition.Y - Page.AbsolutePosition.Y + Page.CanvasPosition.Y
+        + (Portal.Position.Y.Offset + Portal.Size.Y.Offset) * Sc
+    local Want = Bottom + 8 - Page.AbsoluteSize.Y
+    if Want > Page.CanvasPosition.Y then Page.CanvasPosition = V2(0, Want) end
+end
+
+function Surface.Open(Window, Owner, Row)
     Surface.Mount(Window)
     if Surface.Owner ~= Owner then Surface.Close() end
-    Surface.Owner, Surface.Anchor = Owner, Anchor
+    Surface.Owner = Owner
     for Kind, View in Surface.Views do View.Frame.Visible = Kind == Owner.Kind end
+    Surface.Portal.Parent = Row
     Surface.Place()
-    Surface.Portal.Visible, Surface.Catcher.Visible = true, true
-    if Surface.Follow then Surface.Follow:Disconnect() end
-    Surface.Follow = Anchor:GetPropertyChangedSignal("AbsolutePosition"):Connect(Surface.Place)
+    Surface.Portal.Visible = true
+    Surface.Watch = Owner.Content:GetPropertyChangedSignal("AbsoluteSize"):Connect(Surface.Place)
+    Surface.Outside = UserInputService.InputBegan:Connect(function(Input)
+        if not IsPress(Input.UserInputType) then return end
+        local At, Pos, Size = Input.Position, Row.AbsolutePosition, Row.AbsoluteSize
+        if At.X >= Pos.X and At.X <= Pos.X + Size.X and At.Y >= Pos.Y and At.Y <= Pos.Y + Size.Y then return end
+        Surface.Close()
+    end)
+    Surface.Reveal(Row)
+    Owner.Clip:GetPropertyChangedSignal("AbsoluteCanvasSize"):Once(function() Surface.Reveal(Row) end)
 end
 
 function Surface.Close(Owner)
     local Current = Surface.Owner
     if not Current or (Owner and Owner ~= Current) then return end
     Surface.Owner = nil
-    if Surface.Follow then Surface.Follow:Disconnect(); Surface.Follow = nil end
-    Surface.Portal.Visible, Surface.Catcher.Visible = false, false
+    if Surface.Watch then Surface.Watch:Disconnect(); Surface.Watch = nil end
+    if Surface.Outside then Surface.Outside:Disconnect(); Surface.Outside = nil end
+    Surface.Portal.Visible = false
+    Surface.Portal.Parent = Surface.Window.PageHost
     Current.OnClose()
 end
 
@@ -2184,7 +2166,7 @@ function Render(View)
     if not (O and O.Kind == "Dropdown") then return end
     local List, Scroller = View.Filtered, View.List
     local N = #List
-    local First = MC(Floor(Scroller.CanvasPosition.Y / (DropStep * MX(Surface.Scale.Scale, 0.01))) + 1, 1, MX(1, N - DropSlots + 1))
+    local First = MC(Floor(Scroller.CanvasPosition.Y / (DropStep * MX(Surface.Window.Scale.Scale, 0.01))) + 1, 1, MX(1, N - DropSlots + 1))
     for Si = 1, DropSlots do
         local Idx = First + Si - 1
         local B = View.Slots[Si]
@@ -2258,7 +2240,7 @@ DefineControl("Dropdown", function(Ctx, Props, Host)
         Position = UD2(1, 0, 0.5, 0), ImageColor3 = Theme.SubText })
     ApplyIcon(Chev, "chevron-down")
 
-    local Me, View, Changed = { Kind = "Dropdown" }, nil, nil
+    local Me, View, Changed = { Kind = "Dropdown", Clip = Ctx.Page, Content = Host.Content }, nil, nil
 
     local function Values()
         local Out, Seen = {}, {}
@@ -2314,7 +2296,6 @@ DefineControl("Dropdown", function(Ctx, Props, Host)
     end
 
     function Me.Height() return MC(#View.Filtered * DropStep + 14 + SearchH, 44 + SearchH, DropMax) end
-    function Me.OnRescale() Render(View) end
     function Me.OnClose() Tween(Chev, { Rotation = 0 }, 0.18) end
     function Me.IsSel(I) return Chosen[Options[I]] == true end
     function Me.TextAt(I) return Options[I] or "" end
@@ -2418,9 +2399,7 @@ function Container:AddSection(Title, StartClosed)
     return Sub
 end
 
---=====================================================================================
---  13. Window
---=====================================================================================
+-------------------------------------------------------------------------- window
 
 local WindowClass = {}
 WindowClass.__index = WindowClass
@@ -2468,8 +2447,8 @@ function Library:CreateWindow(Opts)
     Window:BuildLauncher()
     Window:WatchViewport()
     if not IsMobile then
-        Window.MenuBind = NewBind(Opts.Keybind or "RightShift", function() Window:Toggle() end, false)
-        Window.Scope.Add(function() DropBind(Window.MenuBind) end)
+        Window.MenuBind = BindClass.new(Opts.Keybind or "RightShift", function() Window:Toggle() end, false)
+        Window.Scope.Add(function() Window.MenuBind:Drop() end)
     end
 
     TDF(function()
@@ -2545,7 +2524,6 @@ function WindowClass:BuildFrame(Opts)
         if not IsPress(Input.UserInputType) then return end
         self.Maximized, self.SavedPos, self.MovedWhileMax = false, nil, false
         ApplyIcon(self.MaxIcon, "maximize-2")
-        Surface.Close()
         local Start, Size0, Pos0 = Input.Position, Root.Size, Root.Position
         BeginDrag(function(I)
             local Sc = MX(Scale.Scale, 0.01)
@@ -2720,7 +2698,6 @@ function WindowClass:Refit()
         Vp = Cam and Cam.ViewportSize or Vp
     end
     if Vp.X < 64 or Vp.Y < 64 then return end
-    Surface.Close()
     if self.Maximized then
         CancelMotors(Root)
         Root.Size = UFO((Vp.X - 20) / Sc, (Vp.Y - 20) / Sc)
@@ -2900,7 +2877,7 @@ function WindowClass:FillSettings(Tab)
     if self.MenuBind then
         local _, _, _, Rail = MakeRow(Tab.Parent, { Name = "Menu Keybind",
             Description = "Opens and closes the menu. Click the key on the right, then press the key you want to use." })
-        BindPill(Rail(), self.MenuBind, "Settings::Menu Keybind_bind", self.Store)
+        self.MenuBind:Mount(Rail(), "Settings::Menu Keybind_bind", self.Store)
     end
     Private.ThemeRow = Tab:AddDropdown({ Name = "Theme", Description = "The color the whole menu is built around. It changes the moment you pick one.",
         Flag = false, Options = Library.Palettes, Default = Library.Palette, Callback = function(Name) Library:SetTheme(Name) end })
@@ -2971,12 +2948,7 @@ function WindowClass:FillSettings(Tab)
     })
 end
 
---=====================================================================================
---  14. Hub — Configure → Authorise → RegisterTab → Init
---
---  Optional. Builds the window itself once the key is in, with the Settings tab last.
---  Register tabs unconditionally; a builder runs as build(tab, window).
---=====================================================================================
+-------------------------------------------------------------------------- hub
 
 local Config = {
     HUB_NAME = "", VERSION = "", DISCORD = "",
@@ -3282,49 +3254,43 @@ function Library:Init()
     end
 end
 
---=====================================================================================
---  15. Keybind dispatch
---=====================================================================================
+-------------------------------------------------------------------------- keybind dispatch
 
 do
     local Keyboard, Backspace, Escape = UIT.Keyboard, Enum.KeyCode.Backspace, Enum.KeyCode.Escape
 
     local function Typing()
-        if Uis:GetFocusedTextBox() then return true end
+        if UserInputService:GetFocusedTextBox() then return true end
         local Chat = game:FindService("TextChatService")
         Chat = Chat and Chat:FindFirstChild("ChatInputBarConfiguration")
         return Chat ~= nil and Chat.IsFocused
     end
 
-    Lifetime.Add(Uis.InputBegan:Connect(function(Io)
+    Lifetime.Add(UserInputService.InputBegan:Connect(function(Io)
         if Io.UserInputType ~= Keyboard then return end
         local Name = Io.KeyCode.Name
         local Armed = Pending
-        if Armed and not Uis:GetFocusedTextBox() then
+        if Armed and not UserInputService:GetFocusedTextBox() then
             Pending = nil
-            Armed.Key = (Io.KeyCode == Backspace or Io.KeyCode == Escape) and "NONE" or Name
-            Disarm(Armed)
-            if Armed.Store then Armed.Store:MarkDirty(Armed.Flag) end
+            Armed:Capture((Io.KeyCode == Backspace or Io.KeyCode == Escape) and "NONE" or Name)
             return
         end
         if Io.KeyCode == Escape then
-            local Box = Uis:GetFocusedTextBox()
+            local Box = UserInputService:GetFocusedTextBox()
             if Box then Box:ReleaseFocus(); return end
             if Surface.Owner then Surface.Close(); return end
         end
         if Private.SliderDragging or Typing() then return end
         for Entry in Binds do
-            if Entry.Key == Name then
-                if Entry.Mode == "Hold" then Entry.Action(true) else Entry.Action() end
-            end
+            if Entry.Key == Name then Entry:Press() end
         end
     end))
 
-    Lifetime.Add(Uis.InputEnded:Connect(function(Io)
+    Lifetime.Add(UserInputService.InputEnded:Connect(function(Io)
         if Io.UserInputType ~= Keyboard then return end
         local Name = Io.KeyCode.Name
         for Entry in Binds do
-            if Entry.Mode == "Hold" and Entry.Key == Name then Entry.Action(false) end
+            if Entry.Key == Name then Entry:Release() end
         end
     end))
 end
