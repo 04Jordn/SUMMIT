@@ -2105,11 +2105,11 @@ function Surface.Open(Window, Owner, Row)
     Surface.Place()
     Surface.Portal.Visible = true
     Surface.Watch = Owner.Content:GetPropertyChangedSignal("AbsoluteSize"):Connect(Surface.Place)
-    Surface.Outside = UserInputService.InputBegan:Connect(function(Input)
+    Surface.Outside = UserInputService.InputEnded:Connect(function(Input)
         if not IsPress(Input.UserInputType) then return end
         local At, Pos, Size = Input.Position, Row.AbsolutePosition, Row.AbsoluteSize
         if At.X >= Pos.X and At.X <= Pos.X + Size.X and At.Y >= Pos.Y and At.Y <= Pos.Y + Size.Y then return end
-        Surface.Close()
+        TDF(Surface.Close, Owner)
     end)
     Surface.Reveal(Row)
     Owner.Clip:GetPropertyChangedSignal("AbsoluteCanvasSize"):Once(function() Surface.Reveal(Row) end)
@@ -2181,8 +2181,11 @@ function Render(View)
         View.Map[Si] = Opt
         B.Text = O.TextAt(Opt)
         B.Position = UFO(0, (Idx - 1) * DropStep)
-        B.BackgroundTransparency = Sel and 0 or 0.15
-        B.TextColor3 = Sel and Theme.Active or Theme.SubText
+        if not HotTargets[B] then
+            CancelMotors(B, "BackgroundTransparency"); CancelMotors(B, "TextColor3")
+            B.BackgroundTransparency = Sel and 0 or 0.15
+            B.TextColor3 = Sel and Theme.Active or Theme.SubText
+        end
         View.Bars[Si].Size = UD2(0, 3, 0, Sel and 15 or 0)
         B.Visible = true
     end
