@@ -2280,7 +2280,6 @@ DefineControl("Dropdown", function(Ctx, Props, Host)
         local K = tostring(Opt)
         if Multi then Chosen[K] = (not Chosen[K]) or nil else TCL(Chosen); Chosen[K] = true end
         Display()
-        if not Multi then Surface.Close(Me) end
         Changed(Get())
     end
 
