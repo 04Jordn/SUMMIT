@@ -23,6 +23,8 @@
 --  that line is the switch that makes it load by itself for everyone standing in that game.
 --=====================================================================================
 
+if _VERSION ~= "Luau" then return end
+
 local BASE   = "https://raw.githubusercontent.com/04Jordn/SUMMIT/refs/heads/main/"
 local SOURCE = BASE .. "SummitX.lua"
 
