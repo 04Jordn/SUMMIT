@@ -1,23 +1,13 @@
 --=====================================================================================
 --  SUMMITX LOADER
 --
---  One URL, two jobs, chosen by the argument it is called with.
+--  One URL for every game. Runs the Luarmor script for the game you are in, picked by GameId:
 --
---  NO ARGUMENT -- returns the Library, exactly like loading SummitX.lua directly:
+--      loadstring(game:HttpGet(LOADER))()
 --
---      local Library = loadstring(game:HttpGet(LOADER))()
---
---  Every game script calls it this way, which is why they can point at a URL that never
---  moves: rename the library file, restructure the repo, change host, and you edit SOURCE
---  below instead of every script you have ever shipped. Those scripts ship obfuscated, so
---  the no-argument call has to keep meaning "give me the Library" -- that is why picking a
---  game is a separate argument rather than the default.
---
---  AN ARGUMENT -- runs the script for the game you are in, picked by GameId:
---
---      loadstring(game:HttpGet(LOADER))("auto")
---
---  Pass a name instead to force one: ("mafia"), ("cold war"), ("fut"), ("last stop").
+--  Premium players put their key on the line above it:  script_key = "KEY"
+--  ("auto") still works for anyone running the old line. Pass a name instead to force one:
+--  ("mafia"), ("cold war"), ("fut"), ("last stop"), ("asylum life").
 --  A name GAMES does not have is fetched as a repo file of that name, so a script still in
 --  development loads by file name without this file naming it. Shipping one is its GAMES line:
 --  that line is the switch that makes it load by itself for everyone standing in that game.
@@ -25,18 +15,20 @@
 
 if _VERSION ~= "Luau" then return end
 
-local BASE   = "https://raw.githubusercontent.com/04Jordn/SUMMIT/refs/heads/main/"
-local SOURCE = BASE .. "SummitX.lua"
+local BASE    = "https://raw.githubusercontent.com/04Jordn/SUMMIT/refs/heads/main/"
+local LUARMOR = "https://api.luarmor.net/files/v3/loaders/%s.lua"
 
 -- GameId, never PlaceId: a universe moves players between places -- Mafia rounds run in a
 -- separate round place, FUT hops pitches -- and the match has to survive the teleport. Ids is
 -- a list because one script can cover several universes: FUT's clones are separate universes
 -- running the same build, which is why FUT is the one script with no GAME_IDS guard of its own.
+-- Script is the Luarmor script id, the hex line under each script's name on the dashboard.
 local GAMES = {
-    { Name = "Cold War",  File = "ColdWarGame",  Ids = { 4750561026 } },
-    { Name = "FUT",       File = "FutGame",      Ids = { 9517627739, 10629189132 } },
-    { Name = "MAFIA",     File = "MafiaGame",    Ids = { 7497471789 } },
-    { Name = "Last Stop", File = "LastStopGame", Ids = { 10759337137 } },
+    { Name = "Cold War",    Script = "84b81eeadcd6ad8ababbf2bbc62e8f4e", Ids = { 4750561026 } },
+    { Name = "FUT",         Script = "6c5072e19a2de9d7a797cab2af7aeb5b", Ids = { 9517627739, 10629189132 } },
+    { Name = "MAFIA",       Script = "26280e1be424b3b4e94f9db1641705f6", Ids = { 7497471789 } },
+    { Name = "Last Stop",   Script = "166746cd428fe86fb1ea18a7d2eb2419", Ids = { 10759337137 } },
+    { Name = "Asylum Life", Script = "dc9226fec2420baccff4fbbe794517e1", Ids = { 6749060816 } },
 }
 
 -- Two transports, same reasoning as the library's own HTTP layer: game:HttpGet is
@@ -77,12 +69,7 @@ local function Fetch(target)
     return nil, why
 end
 
--- Cache-buster: raw.githubusercontent sends Cache-Control: max-age=300, so without it a
--- fresh upload keeps serving the previous copy for five minutes -- which looks exactly
--- like "my update didn't apply".
-local function Run(target, name)
-    local url = target .. (target:find("?") and "&" or "?") .. "_=" .. tostring(os.time())
-
+local function Run(url, name)
     local body, why = Fetch(url)
     if not body then
         warn("[SummitX] download failed for " .. name .. ": " .. tostring(why))
@@ -112,7 +99,7 @@ end
 local function Pick(want)
     if want then
         for _, entry in ipairs(GAMES) do
-            if Normalise(entry.Name) == want or Normalise(entry.File) == want then return entry end
+            if Normalise(entry.Name) == want then return entry end
         end
         return nil, "no script called '" .. want .. "'"
     end
@@ -126,19 +113,23 @@ local function Pick(want)
 end
 
 local mode = ...
-if mode == nil or mode == false then return Run(SOURCE, "SummitX") end
-
 local raw  = (type(mode) == "string") and mode or ""
 local want = Normalise(raw)
 if want == "auto" or want == "game" or want == "true" or want == "" then want = nil end
 
 local entry, why = Pick(want)
-if entry then return Run(BASE .. entry.File, entry.File) end
+if entry and entry.Script == "" then
+    warn("[SummitX] " .. entry.Name .. " is not out yet")
+    return
+end
+if entry then return Run(LUARMOR:format(entry.Script), entry.Name) end
 
 -- A name GAMES does not have is still allowed to be a file on the repo. That is how a script
 -- that has not shipped yet loads -- ("FootballFusion3") -- without this public file naming it,
 -- which a GAMES line would, to everyone, along with handing a copy to anyone standing in that
 -- game. Spelled exactly: raw.githubusercontent is case-sensitive, and a plain file name only.
-if want and raw:match("^[%w_%-]+$") then return Run(BASE .. raw, raw) end
+-- The ?_= cache-buster is GitHub only: raw.githubusercontent caches for five minutes, and
+-- Luarmor answers a loader URL with a query string differently.
+if want and raw:match("^[%w_%-]+$") then return Run(BASE .. raw .. "?_=" .. tostring(os.time()), raw) end
 
 warn("[SummitX] " .. why)
