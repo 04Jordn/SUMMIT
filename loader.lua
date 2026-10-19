@@ -16,7 +16,7 @@
 if _VERSION ~= "Luau" then return end
 
 local BASE    = "https://raw.githubusercontent.com/04Jordn/SUMMIT/refs/heads/main/"
-local LUARMOR = "https://api.luarmor.net/files/v3/loaders/%s.lua"
+local LUARMOR = "https://api.luarmor.net/files/v4/loaders/%s.lua"
 
 -- GameId, never PlaceId: a universe moves players between places -- Mafia rounds run in a
 -- separate round place, FUT hops pitches -- and the match has to survive the teleport. Ids is
