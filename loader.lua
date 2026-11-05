@@ -29,6 +29,8 @@ local GAMES = {
     { Name = "MAFIA",       Script = "26280e1be424b3b4e94f9db1641705f6", Ids = { 7497471789 } },
     { Name = "Last Stop",   Script = "166746cd428fe86fb1ea18a7d2eb2419", Ids = { 10759337137 } },
     { Name = "Asylum Life", Script = "dc9226fec2420baccff4fbbe794517e1", Ids = { 6749060816 } },
+    { Name = "Dungeon Hunters", Script = "3493eecb512a0aeab19b01c86e41c7b3", Ids = { 8937254139 } },
+    { Name = "Practical Basketball", Script = "b303d6232ef4ec984d39ad3ceec90a18", Ids = { 7529591378 } },
 }
 
 -- Two transports, same reasoning as the library's own HTTP layer: game:HttpGet is
